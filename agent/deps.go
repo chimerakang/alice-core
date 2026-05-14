@@ -9,6 +9,8 @@ type StorageBackend interface {
 	InsertDecisionLog(DecisionLog) error
 	GetToolExecutions(limit, offset int) ([]ToolExecution, error)
 	GetDecisionLogs(limit, offset int) ([]DecisionLog, error)
+	InsertRuntimeEvent(RuntimeEventRecord) error
+	GetRuntimeEvents(limit, offset int) ([]RuntimeEventRecord, error)
 }
 
 // EventSink broadcasts tool and decision events (e.g. to a WebSocket hub).

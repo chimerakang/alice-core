@@ -113,6 +113,17 @@ func (tl *ToolLogger) Recent(n int) []ToolExecution {
 	return out
 }
 
+// RuntimeEventRecord captures engine lifecycle events for persistence.
+type RuntimeEventRecord struct {
+	Timestamp time.Time              `json:"timestamp"`
+	Type      string                 `json:"type"`
+	ChannelID int64                  `json:"channel_id,omitempty"`
+	TopicID   int                    `json:"topic_id,omitempty"`
+	TaskID    string                 `json:"task_id,omitempty"`
+	Issue     int                    `json:"issue,omitempty"`
+	Payload   map[string]interface{} `json:"payload,omitempty"`
+}
+
 // DecisionLogger keeps the most recent AI decisions in memory.
 type DecisionLogger struct {
 	decisions []DecisionLog
