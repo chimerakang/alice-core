@@ -1,6 +1,6 @@
 # Fleet 指揮系統：Epic 與開發 Issues
 
-狀態：草案，待確認後建立為 GitHub issues。
+狀態：Epic A、B、C 與 F-2、F-3 已建立為 GitHub issues（標題後的 `#編號`）。Epic D、E 與 F-1 待 `alice` repo 綁定後建立。
 
 ## 1. 背景與決策
 
@@ -17,7 +17,7 @@ Alice 目前以 `hermes` 把一個目標拆成子任務再逐一執行與審查�
 | Project | 一個受管控的 repo：路徑、預設分支、信任模式、驗收指令、並行上限、TG topic 綁定 |
 | Task | 一次 agent 執行，從頭做到完，沒有子任務 |
 | Shape | `ship`（交付變更）或 `scout`（只產出報告，禁止寫入與 push） |
-| Trust mode | `no-mistakes`（驗收通過且人工核准才合併）、`direct-pr`（驗收通過自動開 PR）、`local-only`（只在本地分支，不 push） |
+| Trust mode | `no-mistakes`（驗收通過且擁有者核准才合併）、`direct-pr`（驗收通過自動開 PR）、`local-only`（只在本地分支，不 push） |
 | Worktree | 每個 ship 任務一個獨立 worktree 與分支（預設前綴 `alice/`） |
 
 任務狀態：`queued → running → verifying → review_ready → done`，另有 `failed`、`needs_decision`、`cancelled`。
@@ -37,15 +37,15 @@ Alice 目前以 `hermes` 把一個目標拆成子任務再逐一執行與審查�
 - `alice-core`：`fleet/` 套件、Command API 的 Go 介面與事件型別、儲存。
 - `alice`：Telegram 介面、HTTP／WebSocket 轉接、網頁前端。
 
-下列 issue 以暫時編號標示，建立到 GitHub 後替換為實際編號。規模：S 約半天，M 約一到兩天，L 約三到五天。
+下列 issue 保留設計編號（如 A-1），已建立者在標題後附上 GitHub 編號。規模：S 約半天，M 約一到兩天，L 約三到五天。
 
 ---
 
-## Epic A：解耦並凍結 hermes（alice-core）
+## Epic A：解耦並凍結 hermes（alice-core） #1
 
 目標：在不破壞上游 Alice 的前提下，把要保留的資產從 `hermes` 搬出，讓 `agent`、`memory`、`storage`、`issueops` 不再依賴 planner 相關型別。
 
-### A-1 補上基準測試與 CI（M）
+### A-1 補上基準測試與 CI（M） #5
 整個 repo 目前沒有測試。重構前先建立安全網。
 - [ ] 新增 GitHub Actions：`go build ./...`、`go vet ./...`、`go test ./...`
 - [ ] `client`：以假的 `claude` 執行檔測試參數組裝與 stream-json 解析
@@ -53,33 +53,33 @@ Alice 目前以 `hermes` 把一個目標拆成子任務再逐一執行與審查�
 - [ ] `hermes/github.go`：checklist 解析與回寫的表格式測試
 - [ ] 打 tag `v0.1.0-hermes`，作為上游可回退的版本
 
-### A-2 抽出 `ghissue/` 套件（M）
+### A-2 抽出 `ghissue/` 套件（M） #6
 把 `hermes/github.go`、`hermes/github_config.go`、`hermes/issue_state.go` 搬到獨立套件。
 - [ ] 新套件不 import `hermes`
 - [ ] `IssueContext`、`ChecklistItem`、`IssueState` 及轉移規則移入
 - [ ] `hermes` 內保留 type alias 與轉呼叫，上游編譯不受影響
 - [ ] 依賴：A-1
 
-### A-3 `issueops` 改依賴 `ghissue`（M）
+### A-3 `issueops` 改依賴 `ghissue`（M） #7
 - [ ] 把 `hermes.SubTask` 的使用換成 `issueops` 自有的 `WorkItem{ID, Description}`
 - [ ] `issueops` 不再 import `hermes`
 - [ ] checklist 對應與 evidence 行為以測試鎖住
 - [ ] 依賴：A-2
 
-### A-4 抽出 `chat/` 套件，解開 `agent → engine`（M）
+### A-4 抽出 `chat/` 套件，解開 `agent → engine`（M） #8
 `agent` 只用到 `ChatContext`、`ExecutionLifecycle`、`DecideRecovery`、`errorclass`，卻因此連帶依賴整個 `engine` 與 `hermes`。
 - [ ] `ChatContext`、`ContextMessage`、`BackendKind`、session policy 移到 `chat/`
 - [ ] `ExecutionLifecycle`、recovery policy 移到 `agent/` 或 `chat/`
 - [ ] `agent`、`memory` 不再 import `engine`
 - [ ] 依賴：A-1
 
-### A-5 抽出 `verify/` 套件（S）
+### A-5 抽出 `verify/` 套件（S） #9
 把 `hermes/hooks.go` 的 `PathGuard`、`GoBuild`、`TscCheck`、`JsonLint` 搬出，改成可重用的驗收步驟。
 - [ ] 介面：`Step.Run(ctx, dir) Result{Passed, Command, Output, Duration}`
 - [ ] 支援任意 shell 指令步驟
 - [ ] 依賴：A-1
 
-### A-6 `memory` 以介面取代 `hermes.TaskState`（S）
+### A-6 `memory` 以介面取代 `hermes.TaskState`（S） #10
 - [ ] 定義 `memory.TaskSummary` 與 `TaskSource` 介面
 - [ ] `hermes` 與之後的 `fleet` 各提供 adapter
 - [ ] `memory` 不再 import `hermes`
@@ -87,32 +87,32 @@ Alice 目前以 `hermes` 把一個目標拆成子任務再逐一執行與審查�
 
 ---
 
-## Epic B：Fleet 核心（alice-core）
+## Epic B：Fleet 核心（alice-core） #2
 
 目標：能登記多個專案，並對每個專案平行派發任務，任務在隔離的 worktree 中執行到完成、通過驗收。
 
-### B-1 Project registry（M）
+### B-1 Project registry（M） #11
 - [ ] `fleet.Project`：ID、名稱、repo 路徑、remote、預設分支、信任模式、驗收指令、並行上限、分支前綴
 - [ ] SQLite 表 `fleet_projects`，CRUD 與測試
 - [ ] 登記時檢查：路徑是 git repo、預設分支存在
 - [ ] 專案可附加任意 key-value 綁定（供 TG topic 等使用）
 - [ ] 依賴：A-1
 
-### B-2 Task 模型與狀態機（M）
+### B-2 Task 模型與狀態機（M） #12
 - [ ] `fleet.Task`：ID、專案、shape、目標文字、來源（手動或 issue 編號）、狀態、分支、worktree 路徑、session ID、token 與成本、時間戳
 - [ ] 合法轉移表與 `Transition()`，非法轉移回傳錯誤
 - [ ] SQLite 表 `fleet_tasks`、`fleet_task_events`（只增不改）
 - [ ] 每個轉移都有表格式測試
 - [ ] 依賴：B-1
 
-### B-3 `worktree/` 套件（M）
+### B-3 `worktree/` 套件（M） #13
 - [ ] `Create(repo, branch, base)`、`Remove(path)`、`List(repo)`、`IsDirty(path)`
 - [ ] `Remove` 遇到髒的 worktree 回傳 `ErrDirty`，需明確傳入 force
 - [ ] worktree 集中放在可設定的根目錄下，路徑含專案與任務 ID
 - [ ] 以暫時 repo 做整合測試
 - [ ] 依賴：A-1
 
-### B-4 Runner：一個任務一個 agent 程序（L）
+### B-4 Runner：一個任務一個 agent 程序（L） #14
 - [ ] 在任務的 worktree 內啟動 `claude`，串流事件寫入 `fleet_task_events`
 - [ ] 以 `--resume` 支援中斷後接續與追加指示
 - [ ] 取消：先送中斷，逾時後強制結束
@@ -121,13 +121,13 @@ Alice 目前以 `hermes` 把一個目標拆成子任務再逐一執行與審查�
 - [ ] 以假的 `claude` 執行檔測試完整生命週期
 - [ ] 依賴：B-2、B-3
 
-### B-5 Scheduler 與並行控制（M）
+### B-5 Scheduler 與並行控制（M） #15
 - [ ] 全域與每專案的並行上限
 - [ ] 佇列依優先序與建立時間出隊
 - [ ] 同一分支不可同時有兩個執行中的任務
 - [ ] 依賴：B-4
 
-### B-6 Watcher：零 token 監督（L）
+### B-6 Watcher：零 token 監督（L） #16
 - [ ] 單一 goroutine 監看所有執行中的任務
 - [ ] 以程序狀態、最後事件時間、輸出內容推導 `busy / idle / unknown / dead`
 - [ ] 分類需要處理的事件：完成、失敗、卡住（超過門檻無活動）、agent 提問、超出預算
@@ -135,33 +135,33 @@ Alice 目前以 `hermes` 把一個目標拆成子任務再逐一執行與審查�
 - [ ] 訊號缺失時判為 `unknown` 的測試
 - [ ] 依賴：B-4
 
-### B-7 驗收閘門（M）
+### B-7 驗收閘門（M） #17
 - [ ] 任務進入 `verifying` 時依序執行專案的驗收指令
 - [ ] 結果（指令、結束碼、輸出尾段、耗時）存入 `fleet_verifications`
 - [ ] 失敗時把輸出回饋給同一個 session 重試，次數可設定，用完轉 `needs_decision`
 - [ ] scout 任務的驗收為：`report.md` 存在且 worktree 無變更
 - [ ] 依賴：A-5、B-4
 
-### B-8 信任模式與交付（L）
+### B-8 信任模式與交付（L） #18
 - [ ] `local-only`：驗收通過後停在 `review_ready`，不 push
 - [ ] `direct-pr`：push 分支並開 PR，記錄 PR 連結
-- [ ] `no-mistakes`：開 PR 後等待人工核准，核准後才合併
+- [ ] `no-mistakes`：開 PR 後等待核准，核准後才合併。核准者只有專案擁有者一人，流程為單一核准動作，不做多人審核
 - [ ] 合併只走 fast-forward 或 PR 合併，不改寫歷史
 - [ ] 模式在派工時固定，執行中不可變更
 - [ ] 依賴：B-7
 
-### B-9 重啟復原（M）
+### B-9 重啟復原（M） #19
 - [ ] 啟動時掃描非終態任務，與實際程序、worktree 對帳
 - [ ] 程序已不存在的 `running` 任務標為 `dead`，轉 `needs_decision`
 - [ ] 孤兒 worktree 列出報告，不自動刪除
 - [ ] 依賴：B-6
 
-### B-10 預算與配額（S）
+### B-10 預算與配額（S） #20
 - [ ] 每任務、每專案、每日的 token 與成本上限
 - [ ] 超出時暫停任務並產生 wake 事件
 - [ ] 依賴：B-6
 
-### B-11 GitHub issue 作為任務來源（M）
+### B-11 GitHub issue 作為任務來源（M） #21
 - [ ] 以 issue 編號派工，issue 內容與未勾選的 checklist 帶入目標
 - [ ] 任務開始、完成、失敗時在 issue 留言
 - [ ] 驗收通過後同步 checklist，並附上驗收證據
@@ -169,29 +169,29 @@ Alice 目前以 `hermes` 把一個目標拆成子任務再逐一執行與審查�
 
 ---
 
-## Epic C：Command API（alice-core）
+## Epic C：Command API（alice-core） #3
 
 目標：TG 與網頁共用的單一指揮介面。兩個前端都不直接碰 `fleet` 的內部。
 
-### C-1 `fleet.Commander` 介面（M）
+### C-1 `fleet.Commander` 介面（M） #22
 - [ ] 指令：`RegisterProject`、`UpdateProject`、`Dispatch`、`Cancel`、`Retry`、`Reply`（回答 agent 提問或追加指示）、`Approve`、`Merge`、`Discard`
 - [ ] 查詢：`ListProjects`、`ListTasks`（可依專案、狀態篩選）、`GetTask`、`TaskEvents`（分頁）、`TaskDiff`、`Digest`
 - [ ] 所有指令帶上操作者身分並寫入稽核紀錄
 - [ ] 依賴：B-2
 
-### C-2 事件匯流排（M）
+### C-2 事件匯流排（M） #23
 - [ ] `Subscribe(filter)` 回傳事件 channel：任務狀態變更、存活狀態變更、驗收結果、wake
 - [ ] 支援從指定事件 ID 之後重播，供斷線重連
 - [ ] 與既有的 `agent.EventSink` 相容
 - [ ] 依賴：B-6
 
-### C-3 通知政策（M）
+### C-3 通知政策（M） #24
 - [ ] 每位使用者的模式：`normal`、`quiet`（只收需要決策的）、`afk`（在授權範圍內自動處理，回來時給摘要）
 - [ ] `afk` 的授權範圍明確列舉且有到期時間，到期自動回到 `normal`
 - [ ] 同一任務的通知合併，設最短間隔
 - [ ] 依賴：C-2
 
-### C-4 Digest 產生器（S）
+### C-4 Digest 產生器（S） #25
 - [ ] 艦隊摘要：各專案執行中、待審、待決策、失敗的數量，以及今日成本
 - [ ] 輸出結構化資料，由前端各自排版
 - [ ] 依賴：C-1
@@ -297,7 +297,7 @@ Alice 目前以 `hermes` 把一個目標拆成子任務再逐一執行與審查�
 
 ---
 
-## Epic F：切換與移除 hermes
+## Epic F：切換與移除 hermes #4
 
 ### F-1 Alice 改走 fleet（alice，L）
 - [ ] 以設定開關在 hermes 與 fleet 之間切換，預設仍為 hermes
@@ -305,12 +305,12 @@ Alice 目前以 `hermes` 把一個目標拆成子任務再逐一執行與審查�
 - [ ] 預設值切到 fleet
 - [ ] 依賴：Epic B、C、D
 
-### F-2 舊資料處理（alice-core，S）
+### F-2 舊資料處理（alice-core，S） #26
 - [ ] 舊的 `hermes_*` 表保留唯讀，不做遷移
 - [ ] 提供匯出歷史任務摘要的指令
 - [ ] 依賴：F-1
 
-### F-3 移除 hermes 與 engine 的 planner 程式碼（alice-core，M）
+### F-3 移除 hermes 與 engine 的 planner 程式碼（alice-core，M） #27
 - [ ] 刪除 `hermes/` 中的 planner、reducer、snapshot、store、accumulated、progress、summary
 - [ ] 刪除 `engine/graph/`、`engine/plan_execute.go`、`engine/graph_bridge.go`、`engine/review.go`、`engine/task_retry.go`
 - [ ] 移除 A-2 留下的 alias
@@ -335,5 +335,9 @@ Alice 目前以 `hermes` 把一個目標拆成子任務再逐一執行與審查�
 ## 待確認事項
 
 1. TG 與網頁的 issue 是否建立在 `alice` repo。本文件撰寫時無法讀取該 repo，Epic D、E 中「沿用既有機制」的部分需對照實際程式碼調整。
-2. `no-mistakes` 模式的核准者是否只有你一人。若是，核准流程可以簡化為單一按鈕。
-3. worktree 根目錄與磁碟配額的預設值。
+2. worktree 根目錄與磁碟配額的預設值。
+
+## 已確認事項
+
+- `no-mistakes` 模式的核准者只有專案擁有者一人，核准流程為單一動作。
+- Epic D、E 與 F-1 待 `alice` repo 綁定後再建立 issue。
