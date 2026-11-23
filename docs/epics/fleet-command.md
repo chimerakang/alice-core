@@ -349,7 +349,7 @@ alice 端的項目為 F-1、F-4、F-5、F-6；alice-core 端為 F-2、F-3。
 
 ### F-4 統一開發基準分支（alice，S） alice#182
 `exp/hermes-vscode-hook` 與 `main` 已分岔，fleet 的工作需要單一基準。
-- [ ] 決定基準分支（建議以 `exp/hermes-vscode-hook` 為準）
+- [x] 決定基準分支：已確認以 `exp/hermes-vscode-hook` 為準
 - [ ] 把另一條線獨有的提交併入：`main` 上的 Telegram 請求逾時、輪詢復原、`/wake` 指令
 - [ ] 併入後 `go build ./...` 與 `go test ./...` 通過
 - [ ] 預設分支指向統一後的結果
@@ -406,10 +406,10 @@ alice 端的項目為 F-1、F-4、F-5、F-6；alice-core 端為 F-2、F-3。
 
 ## 待確認事項
 
-1. alice 的開發基準分支（見 F-4）。本文件的 Epic D、E 以 `exp/hermes-vscode-hook` 為對照。
-2. worktree 根目錄與磁碟配額的預設值。
+1. worktree 根目錄與磁碟配額的預設值。
 
 ## 已確認事項
 
+- alice 的開發基準分支為 `exp/hermes-vscode-hook`，`main` 上獨有的提交併入該線（見 F-4）。
 - `no-mistakes` 模式的核准者只有專案擁有者一人，核准流程為單一動作。
 - Epic D、E 與 alice 端的 F 項目建立在 `chimerakang/alice`，里程碑為 `P17 - Fleet Command`。
