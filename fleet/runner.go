@@ -183,6 +183,7 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 	run := &activeRun{}
 	r.register(taskID, run)
 	defer r.unregister(taskID, run)
+	_ = r.Store.SetLiveness(ctx, taskID, LivenessBusy)
 
 	// From here on the task is ours and must leave "running" whatever
 	// happens, including after ctx is cancelled.
@@ -193,6 +194,8 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 
 	finalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
+	// The process has exited and the Runner saw it happen.
+	_ = r.Store.SetLiveness(finalCtx, taskID, LivenessIdle)
 	final, err := r.Store.Transition(finalCtx, taskID, end.status, end.reason)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("fleet: record end of run for task %s (%s: %s): %w", taskID, end.status, end.reason, err)

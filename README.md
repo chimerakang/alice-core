@@ -16,7 +16,7 @@ Reusable Go library extracted from [Alice](https://github.com/chimerakang/alice)
 | `chat/` | `ChatContext` and its lifecycle, native session policy, `ExecutionLifecycle`, error recovery policy. No orchestrator dependency |
 | `errorclass/` | Classifies error text as rate limit, overload, network reset, timeout, EOF, context overflow, or killed |
 | `ghissue/` | GitHub issues via the `gh` CLI: fetch, checklist parsing and write-back, comments, labels, issue lifecycle FSM |
-| `fleet/` | Command layer for running agents across projects: project registry, task model and lifecycle state machine, append-only task event log, and a `Runner` that executes one agent per task in its own worktree |
+| `fleet/` | Command layer for running agents across projects: project registry, task model and lifecycle state machine, append-only task event log, a `Runner` (one agent per task in its own worktree), a `Verifier` (acceptance by exit code) and a `Scheduler` (queue and concurrency limits) |
 | `worktree/` | Per-task git worktrees: create, attach, list, prune, and removal that refuses uncommitted work |
 | `verify/` | Acceptance checks judged by exit code: `Step` interface, shell-command steps, `go build` / `tsc` / `jq` steps, path deny-list guard |
 | `engine/` | Plan-execute FSM, recovery policy for plan-execute modes, review engine, graph walker. Re-exports `chat` types for compatibility |
@@ -194,6 +194,20 @@ runner.Cancel(task.ID, "not needed")                                     // inte
 ```
 
 A `ShapeScout` task gets only read-only tools; its final message is saved as `report.md`.
+
+`fleet.Scheduler` drains the queue within the concurrency limits and carries each task through run and verification:
+
+```go
+sched := &fleet.Scheduler{Store: store, Runner: runner, MaxConcurrent: 2}
+go sched.Run(ctx) // starts queued tasks as slots open; stops their agents when ctx ends
+
+store.CreateTask(ctx, fleet.NewTask{ProjectID: project.ID, Goal: "...", Priority: 5})
+sched.Kick() // look at the queue now instead of at the next poll
+```
+
+After the agent finishes, `fleet.Verifier` runs the project's `VerifyCommands` in the task's worktree and judges by exit code alone. A failure is sent back to the same agent session with the failing command and its output, up to `MaxRetries` times, then the task becomes `needs_decision`. A scout is checked for a non-empty report and an untouched checkout. Every check is stored in `fleet_verifications`.
+
+`Scheduler.Run` begins with `Runner.Recover`, which reconciles stored state with reality after a crash or restart: a task stored as running with no process behind it is marked dead and moved to `needs_decision` with its session intact, an agent process that outlived the host is stopped, and checkouts that no unfinished task owns are reported (never deleted). Set `Scheduler.OnRecovery` to receive the report.
 
 Task lifecycle: `queued → running → verifying → review_ready → done`, with `needs_decision`, `failed` and `cancelled` as the exits. `fleet.CanTransition` holds the full table; an illegal change returns a `*fleet.TransitionError`.
 

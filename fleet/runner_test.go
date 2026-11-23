@@ -29,6 +29,9 @@ echo "$n" > "$D/count"
 for a in "$@"; do printf '%s\n' "$a" >> "$D/args.$n"; printf '\036\n' >> "$D/args.$n"; done
 pwd -P > "$D/cwd.$n"
 env > "$D/env.$n"
+# A script for this exact invocation wins over the shared one.
+script="$D/script"
+if [ -f "$D/script.$n" ]; then script="$D/script.$n"; fi
 while IFS= read -r line; do
   case "$line" in
     "#sleep "*)   sleep "${line#\#sleep }" ;;
@@ -37,9 +40,12 @@ while IFS= read -r line; do
     "#exit "*)    exit "${line#\#exit }" ;;
     "#stderr "*)  echo "${line#\#stderr }" >&2 ;;
     "#touch "*)   echo made-by-agent > "${line#\#touch }" ;;
+    "#rm "*)      rm -f "${line#\#rm }" ;;
+    "#begin")     echo "b $(pwd -P)" >> "$D/log" ;;
+    "#end")       echo "e $(pwd -P)" >> "$D/log" ;;
     *)            printf '%s\n' "$line" ;;
   esac
-done < "$D/script"
+done < "$script"
 `
 
 type runnerEnv struct {
@@ -80,6 +86,15 @@ func newRunnerEnv(t *testing.T) *runnerEnv {
 func (e *runnerEnv) script(lines ...string) {
 	e.t.Helper()
 	if err := os.WriteFile(filepath.Join(e.dir, "script"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// scriptFor sets what the fake agent plays back on its n-th invocation only.
+func (e *runnerEnv) scriptFor(n int, lines ...string) {
+	e.t.Helper()
+	path := filepath.Join(e.dir, "script."+strconv.Itoa(n))
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		e.t.Fatal(err)
 	}
 }

@@ -20,6 +20,7 @@ func (s *Store) CreateTask(ctx context.Context, in NewTask) (Task, error) {
 		Model:     strings.TrimSpace(in.Model),
 		Priority:  in.Priority,
 		Status:    StatusQueued,
+		Liveness:  LivenessUnknown,
 	}
 	if t.Shape == "" {
 		t.Shape = ShapeShip
@@ -96,18 +97,19 @@ func (s *Store) CreateTask(ctx context.Context, in NewTask) (Task, error) {
 
 const taskColumns = `id, project_id, shape, goal, source_kind, issue_number, trust_mode, model, priority,
 	status, status_reason, branch, worktree_path, session_id,
-	input_tokens, output_tokens, cost_usd, created_at, updated_at, started_at, finished_at, last_activity_at`
+	input_tokens, output_tokens, cost_usd, created_at, updated_at, started_at, finished_at, last_activity_at, liveness`
 
 func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 	var (
 		t                          Task
 		shape, kind, trust, status string
+		liveness                   string
 		created, updated           int64
 		started, finished, active  sql.NullInt64
 	)
 	err := row.Scan(&t.ID, &t.ProjectID, &shape, &t.Goal, &kind, &t.Source.IssueNumber, &trust, &t.Model, &t.Priority,
 		&status, &t.StatusReason, &t.Branch, &t.WorktreePath, &t.SessionID,
-		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &created, &updated, &started, &finished, &active)
+		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &created, &updated, &started, &finished, &active, &liveness)
 	if err != nil {
 		return Task{}, err
 	}
@@ -115,6 +117,7 @@ func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 	t.CreatedAt, t.UpdatedAt = fromMillis(created), fromMillis(updated)
 	t.StartedAt, t.FinishedAt = fromNullMillis(started), fromNullMillis(finished)
 	t.LastActivityAt = fromNullMillis(active)
+	t.Liveness = Liveness(liveness)
 	return t, nil
 }
 
@@ -263,6 +266,37 @@ func (s *Store) SetWorkspace(ctx context.Context, taskID, branch, worktreePath s
 // SetSession records the agent session a task can be resumed from.
 func (s *Store) SetSession(ctx context.Context, taskID, sessionID string) error {
 	return s.updateTask(ctx, taskID, `session_id = ?`, sessionID)
+}
+
+// SetLiveness records what is known about the task's agent process.
+func (s *Store) SetLiveness(ctx context.Context, taskID string, liveness Liveness) error {
+	if !liveness.Valid() {
+		return fmt.Errorf("%w: unknown liveness %q", ErrInvalidTask, liveness)
+	}
+	return s.updateTask(ctx, taskID, `liveness = ?`, string(liveness))
+}
+
+// lastEvent returns the task's most recent event of a type, if it has one.
+func (s *Store) lastEvent(ctx context.Context, taskID, eventType string) (Event, bool, error) {
+	var (
+		ev      Event
+		body    sql.NullString
+		created int64
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT id, task_id, type, payload, created_at FROM fleet_task_events
+		WHERE task_id = ? AND type = ? ORDER BY id DESC LIMIT 1`, taskID, eventType).
+		Scan(&ev.ID, &ev.TaskID, &ev.Type, &body, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Event{}, false, nil
+	}
+	if err != nil {
+		return Event{}, false, fmt.Errorf("fleet: load event: %w", err)
+	}
+	if body.Valid {
+		ev.Payload = json.RawMessage(body.String)
+	}
+	ev.CreatedAt = fromMillis(created)
+	return ev, true, nil
 }
 
 // AddUsage adds to a task's token and cost totals. Increments from
