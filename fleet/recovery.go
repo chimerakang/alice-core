@@ -112,7 +112,7 @@ func (r *Runner) Recover(ctx context.Context) (RecoveryReport, error) {
 func (r *Runner) recoverTask(ctx context.Context, task Task) (RecoveredTask, bool, error) {
 	out := RecoveredTask{From: task.Status}
 
-	reason := "agent process is gone: the host restarted while it was running"
+	reason := "agent process is gone: it died or the host restarted while it was running"
 	if task.Status == StatusVerifying {
 		reason = "verification was cut off by a host restart"
 	}
@@ -139,34 +139,45 @@ func (r *Runner) recoverTask(ctx context.Context, task Task) (RecoveredTask, boo
 
 // leftoverAgent returns the PID of the task's agent process from before the
 // restart if it is still alive, or 0.
-//
-// A PID alone proves nothing, because PIDs are reused. The process must also
-// look like an agent run: its command line has to name the agent binary and
-// the stream-json output mode the Runner always asks for.
 func (r *Runner) leftoverAgent(ctx context.Context, task Task) int {
+	pid, ok := r.recordedPID(ctx, task)
+	if !ok || !r.agentAlive(ctx, pid) {
+		return 0
+	}
+	return pid
+}
+
+// recordedPID returns the process ID logged when the task's latest run began.
+func (r *Runner) recordedPID(ctx context.Context, task Task) (int, bool) {
 	ev, ok, err := r.Store.lastEvent(ctx, task.ID, EventRunStarted)
 	if err != nil || !ok {
-		return 0
+		return 0, false
 	}
 	var started struct {
 		PID int `json:"pid"`
 	}
 	if json.Unmarshal(ev.Payload, &started) != nil || started.PID <= 1 {
-		return 0
+		return 0, false
 	}
-	if err := syscall.Kill(started.PID, 0); err != nil && !errors.Is(err, syscall.EPERM) {
-		return 0 // no such process
+	return started.PID, true
+}
+
+// agentAlive reports whether pid is a live agent process.
+//
+// A PID alone proves nothing, because PIDs are reused. The process must also
+// look like an agent run: its command line has to name the agent binary and
+// the stream-json output mode the Runner always asks for.
+func (r *Runner) agentAlive(ctx context.Context, pid int) bool {
+	if err := syscall.Kill(pid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
+		return false // no such process
 	}
 	out, err := process.RunOutput(ctx, process.Options{Timeout: 10 * time.Second, LogPrefix: "fleet.recover"},
-		"ps", "-o", "command=", "-p", fmt.Sprint(started.PID))
+		"ps", "-o", "command=", "-p", fmt.Sprint(pid))
 	if err != nil {
-		return 0
+		return false
 	}
 	command := string(out)
-	if !strings.Contains(command, filepath.Base(r.binary())) || !strings.Contains(command, "stream-json") {
-		return 0 // the PID now belongs to something else
-	}
-	return started.PID
+	return strings.Contains(command, filepath.Base(r.binary())) && strings.Contains(command, "stream-json")
 }
 
 // reconcileWorktrees compares the checkouts under the worktree root with the

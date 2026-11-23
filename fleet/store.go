@@ -143,6 +143,23 @@ var schema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_fleet_verifications_task
 		ON fleet_verifications (task_id, attempt, step_index)`,
+	`CREATE TABLE IF NOT EXISTS fleet_wakes (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id     TEXT NOT NULL,
+		project_id  TEXT NOT NULL,
+		kind        TEXT NOT NULL,
+		detail      TEXT NOT NULL DEFAULT '',
+		dedupe_key  TEXT NOT NULL,
+		created_at  INTEGER NOT NULL,
+		consumed_at INTEGER,
+		UNIQUE (task_id, kind, dedupe_key)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_fleet_wakes_pending
+		ON fleet_wakes (consumed_at, id)`,
+	`CREATE TABLE IF NOT EXISTS fleet_meta (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`,
 	// The event log is history: once written, a row is never changed or removed.
 	`CREATE TRIGGER IF NOT EXISTS fleet_task_events_no_update
 		BEFORE UPDATE ON fleet_task_events
@@ -156,6 +173,8 @@ var schema = []string{
 // TABLE IF NOT EXISTS leaves an existing table alone, so they are added here.
 var addedColumns = []struct{ table, column, definition string }{
 	{"fleet_tasks", "liveness", "TEXT NOT NULL DEFAULT 'unknown'"},
+	{"fleet_tasks", "pr_url", "TEXT NOT NULL DEFAULT ''"},
+	{"fleet_tasks", "pr_number", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 func (s *Store) migrate() error {

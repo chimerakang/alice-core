@@ -45,7 +45,7 @@ func TestRecover_StaleRunningTask(t *testing.T) {
 	if got.From != StatusRunning || got.KilledPID != 0 || got.Task.ID != task.ID {
 		t.Errorf("recovered = %+v", got)
 	}
-	if got.Task.Status != StatusNeedsDecision || !strings.Contains(got.Task.StatusReason, "host restarted") {
+	if got.Task.Status != StatusNeedsDecision || !strings.Contains(got.Task.StatusReason, "agent process is gone") {
 		t.Errorf("task = %s (%q)", got.Task.Status, got.Task.StatusReason)
 	}
 	if got.Task.Liveness != LivenessDead {

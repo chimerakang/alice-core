@@ -22,6 +22,10 @@ type Scheduler struct {
 	// Runner's settings: a task must never be left verifying with nothing
 	// checking it, or its slot would be held forever.
 	Verifier *Verifier
+	// Deliverer, when set, carries each verified ship task as far as its
+	// trust mode allows: committing, pushing, opening a pull request. When
+	// nil, verified tasks simply wait at review_ready.
+	Deliverer *Deliverer
 	// MaxConcurrent caps active tasks across all projects. Zero means
 	// DefaultSchedulerConcurrency. Each project's own MaxConcurrent applies
 	// on top of it.
@@ -201,7 +205,8 @@ func (s *Scheduler) Tick(ctx context.Context) ([]string, error) {
 
 // RunTask runs a task's agent and then verifies the result, sending the task
 // back to its agent with the failure for as long as the Verifier asks for a
-// retry. It returns the result of the last run.
+// retry. A ship task that passes is then delivered, if a Deliverer is set.
+// It returns the result of the last run, with the task as finally stored.
 //
 // The Scheduler calls it for every task it starts. Call it directly to push
 // a task that is waiting on the owner through the same run-and-verify cycle,
@@ -219,6 +224,13 @@ func (s *Scheduler) RunTask(ctx context.Context, taskID string, opts RunOptions)
 			break
 		}
 		res, err = s.Runner.Run(ctx, taskID, RunOptions{Instruction: check.Feedback})
+	}
+	if err == nil && s.Deliverer != nil && res.Task.Shape == ShapeShip && res.Task.Status == StatusReviewReady {
+		delivery, derr := s.Deliverer.Deliver(ctx, taskID)
+		if derr != nil {
+			return res, derr
+		}
+		res.Task = delivery.Task
 	}
 	return res, err
 }

@@ -16,7 +16,7 @@ Reusable Go library extracted from [Alice](https://github.com/chimerakang/alice)
 | `chat/` | `ChatContext` and its lifecycle, native session policy, `ExecutionLifecycle`, error recovery policy. No orchestrator dependency |
 | `errorclass/` | Classifies error text as rate limit, overload, network reset, timeout, EOF, context overflow, or killed |
 | `ghissue/` | GitHub issues via the `gh` CLI: fetch, checklist parsing and write-back, comments, labels, issue lifecycle FSM |
-| `fleet/` | Command layer for running agents across projects: project registry, task model and lifecycle state machine, append-only task event log, a `Runner` (one agent per task in its own worktree), a `Verifier` (acceptance by exit code) and a `Scheduler` (queue and concurrency limits) |
+| `fleet/` | Command layer for running agents across projects: project registry, task model and lifecycle state machine, append-only task event log, a `Runner` (one agent per task in its own worktree), a `Verifier` (acceptance by exit code), a `Scheduler` (queue and concurrency limits), a `Deliverer` (commit, push, pull request, approval) and a `Watcher` (zero-token supervision with a durable wake queue) |
 | `worktree/` | Per-task git worktrees: create, attach, list, prune, and removal that refuses uncommitted work |
 | `verify/` | Acceptance checks judged by exit code: `Step` interface, shell-command steps, `go build` / `tsc` / `jq` steps, path deny-list guard |
 | `engine/` | Plan-execute FSM, recovery policy for plan-execute modes, review engine, graph walker. Re-exports `chat` types for compatibility |
@@ -206,6 +206,18 @@ sched.Kick() // look at the queue now instead of at the next poll
 ```
 
 After the agent finishes, `fleet.Verifier` runs the project's `VerifyCommands` in the task's worktree and judges by exit code alone. A failure is sent back to the same agent session with the failing command and its output, up to `MaxRetries` times, then the task becomes `needs_decision`. A scout is checked for a non-empty report and an untouched checkout. Every check is stored in `fleet_verifications`.
+
+A verified ship task is then delivered as far as its trust mode allows. Set `Scheduler.Deliverer` to have this happen automatically:
+
+| Trust mode | After verification | `Deliverer.Approve` |
+|---|---|---|
+| `local-only` | work committed on its branch; nothing pushed; task waits | fast-forwards the default branch |
+| `direct-pr` | branch pushed, pull request opened, task done | not applicable |
+| `no-mistakes` | branch pushed, pull request opened, task waits | merges the pull request |
+
+History is never rewritten: a plain push, then a fast-forward or a merge commit. A task that changed nothing, or whose changes include a secret file (`.env`, `*.pem`, `*.key`, SSH keys), is stopped and handed to the owner instead.
+
+`fleet.Watcher` supervises without calling a model. It turns status changes into wakes (review ready, completed, failed, question, decision needed), reports running tasks that have gone quiet or over budget, and keeps each task's `Liveness` honest: with no evidence either way it is `unknown`, never `idle`. Wakes are durable: read them with `Store.PendingWakes` and acknowledge each with `Store.ConsumeWake` once it has been acted on.
 
 `Scheduler.Run` begins with `Runner.Recover`, which reconciles stored state with reality after a crash or restart: a task stored as running with no process behind it is marked dead and moved to `needs_decision` with its session intact, an agent process that outlived the host is stopped, and checkouts that no unfinished task owns are reported (never deleted). Set `Scheduler.OnRecovery` to receive the report.
 
