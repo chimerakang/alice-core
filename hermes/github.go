@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/chimerakang/alice-core/ghissue"
 )
@@ -167,49 +166,42 @@ func BuildGoalFromIssue(issue *IssueContext) string {
 }
 
 // WritePlanToIssue writes the generated sub-task plan to the Issue body.
-//
-// The body is always re-fetched from GitHub before mutation: any previously
-// written plan section is stripped and a fresh one appended.
+// See ghissue.WritePlan for how the existing plan section is replaced.
 //
 // originalBody is retained for backward compatibility but no longer used.
 func WritePlanToIssue(ctx context.Context, projectDir string, number int, originalBody string, tasks []SubTask) error {
 	_ = originalBody // intentionally ignored; see doc comment
-
-	body, err := ghissue.FetchBody(ctx, projectDir, number)
-	if err != nil {
-		return fmt.Errorf("fetch body for plan write: %w", err)
+	entries := make([]ghissue.PlanEntry, 0, len(tasks))
+	for _, t := range tasks {
+		entries = append(entries, ghissue.PlanEntry{Description: t.Description, ChecklistItemIDs: t.ChecklistItemIDs})
 	}
-	cleanBody := ghissue.StripPlanSections(body)
-
-	var sb strings.Builder
-	sb.WriteString(cleanBody)
-	if cleanBody != "" && !strings.HasSuffix(cleanBody, "\n") {
-		sb.WriteString("\n")
-	}
-	sb.WriteString("\n## " + ghissue.PlanSectionTitle + "\n\n")
-	for idx, t := range tasks {
-		fmt.Fprintf(&sb, "%d. %s", idx+1, t.Description)
-		if len(t.ChecklistItemIDs) > 0 {
-			sb.WriteString(" _(covers: ")
-			sb.WriteString(strings.Join(t.ChecklistItemIDs, ", "))
-			sb.WriteString(")_")
-		}
-		sb.WriteString("\n")
-	}
-
-	if err := ghissue.UpdateIssueBody(ctx, projectDir, number, sb.String()); err != nil {
-		return fmt.Errorf("write plan: %w", err)
-	}
-	return nil
+	return ghissue.WritePlan(ctx, projectDir, number, entries)
 }
 
 // ── Comment builders ──────────────────────────────────────────────────────────
 
+// CompletionSummaryOf reduces a task state to what the completion comment reports.
+func CompletionSummaryOf(state TaskState) ghissue.CompletionSummary {
+	summary := ghissue.CompletionSummary{
+		Total:      len(state.Plan),
+		TokensUsed: state.TokenBudget.UsedTokens,
+		MaxTokens:  state.TokenBudget.MaxTotalTokens,
+		StartedAt:  state.TokenBudget.StartedAt,
+	}
+	for _, st := range state.Plan {
+		if st.Status == SubTaskDone {
+			summary.Done++
+		}
+	}
+	for _, a := range state.Artifacts {
+		summary.Artifacts = append(summary.Artifacts, ghissue.Artifact{Path: a.Path, Hash: a.Hash})
+	}
+	return summary
+}
+
 // CommentStarted builds the "Hermes started" lifecycle comment.
 func CommentStarted(plannerModel, executorModel string) string {
-	return fmt.Sprintf("🤖 **Hermes 開始執行**\n\n- Planner: `%s`\n- Executor: `%s`\n- 開始時間: %s",
-		plannerModel, executorModel,
-		time.Now().Format("2006-01-02 15:04:05"))
+	return ghissue.CommentStarted(plannerModel, executorModel)
 }
 
 // CommentDone builds the "all done" lifecycle comment.
@@ -217,73 +209,24 @@ func CommentDone(state TaskState) string {
 	return CommentDoneWithNote(state, "")
 }
 
+// CommentDoneWithNote builds the "all done" lifecycle comment with a trailing note.
 func CommentDoneWithNote(state TaskState, note string) string {
-	var sb strings.Builder
-	done := 0
-	for _, st := range state.Plan {
-		if st.Status == SubTaskDone {
-			done++
-		}
-	}
-	elapsed := ""
-	if !state.TokenBudget.StartedAt.IsZero() {
-		elapsed = time.Since(state.TokenBudget.StartedAt).Round(time.Second).String()
-	}
-
-	sb.WriteString(fmt.Sprintf("✅ **Hermes 完成** %d/%d SubTasks\n\n", done, len(state.Plan)))
-	sb.WriteString(fmt.Sprintf("- Token 用量: %d", state.TokenBudget.UsedTokens))
-	if state.TokenBudget.MaxTotalTokens > 0 {
-		sb.WriteString(fmt.Sprintf("/%d", state.TokenBudget.MaxTotalTokens))
-	}
-	sb.WriteString("\n")
-	if elapsed != "" {
-		sb.WriteString(fmt.Sprintf("- 執行時間: %s\n", elapsed))
-	}
-
-	if len(state.Artifacts) > 0 {
-		sb.WriteString("\n**修改的檔案：**\n")
-		for _, a := range state.Artifacts {
-			if a.Hash != "" {
-				sb.WriteString(fmt.Sprintf("- `%s` (%s)\n", a.Path, a.Hash[:min8(len(a.Hash))]))
-			} else {
-				sb.WriteString(fmt.Sprintf("- `%s`\n", a.Path))
-			}
-		}
-	}
-	if strings.TrimSpace(note) != "" {
-		sb.WriteString("\n**Note:**\n")
-		sb.WriteString(strings.TrimSpace(note))
-		sb.WriteString("\n")
-	}
-	return sb.String()
+	return ghissue.CommentDone(CompletionSummaryOf(state), note)
 }
 
 // CommentFailed builds the "task failed" lifecycle comment.
 func CommentFailed(failedDesc, reason string, doneCount, totalCount int) string {
-	return fmt.Sprintf("❌ **Hermes 執行失敗**\n\n"+
-		"- 失敗於子任務: `%s`\n"+
-		"- 原因: %s\n"+
-		"- 已完成: %d/%d\n\n"+
-		"建議：修正上述問題後重新執行 `/hermes #<issue>`",
-		failedDesc, reason, doneCount, totalCount)
+	return ghissue.CommentFailed(failedDesc, reason, doneCount, totalCount)
 }
 
 // CommentBudgetExceeded builds the "budget exceeded" lifecycle comment.
 func CommentBudgetExceeded(used, max int) string {
-	return fmt.Sprintf("⚠️ **Hermes Budget 耗盡**\n\n"+
-		"- Token 用量: %d / %d\n\n"+
-		"可增加 `hermes.budget.max_total_tokens` 後重新執行。",
-		used, max)
+	return ghissue.CommentBudgetExceeded(used, max)
 }
 
 // CommentSubTaskProgress builds a per-subtask progress comment.
 func CommentSubTaskProgress(idx, totalCount int, subTask SubTask, resultText string, execTokens, completedCount int) string {
-	return fmt.Sprintf("✅ **子任務進度** (%d/%d)\n\n"+
-		"- 子任務: `%s`\n"+
-		"- 結果: %s\n"+
-		"- Token 用量: %d\n"+
-		"- 完成進度: %d/%d\n",
-		idx+1, totalCount, subTask.Description, resultText, execTokens, completedCount, totalCount)
+	return ghissue.CommentProgress(idx, totalCount, subTask.Description, resultText, execTokens, completedCount)
 }
 
 // PostCommentEvent posts a lifecycle event comment to the Issue.

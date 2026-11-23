@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/chimerakang/alice-core/hermes"
+	"github.com/chimerakang/alice-core/ghissue"
 )
 
 // ChecklistMappingConfidence represents the certainty of a sub-task to checklist match.
@@ -34,30 +34,30 @@ type ChecklistMapping struct {
 
 // ChecklistMappingResult captures the current checklist matching state.
 type ChecklistMappingResult struct {
-	Issue                  *hermes.IssueContext
-	State                  hermes.IssueState
+	Issue                  *ghissue.IssueContext
+	State                  ghissue.IssueState
 	NeedsHumanConfirmation bool
 	ChecklistSynced        bool
 	TotalChecklistItems    int
 	TotalSubTasks          int
 	Mappings               []ChecklistMapping
-	UnmappedSubTasks       []hermes.SubTask
-	UnmappedChecklistItems []hermes.ChecklistItem
+	UnmappedSubTasks       []WorkItem
+	UnmappedChecklistItems []ghissue.ChecklistItem
 	Notes                  []string
 }
 
-func buildChecklistMapping(issue *hermes.IssueContext, subtasks []hermes.SubTask) ChecklistMappingResult {
+func buildChecklistMapping(issue *ghissue.IssueContext, subtasks []WorkItem) ChecklistMappingResult {
 	result := ChecklistMappingResult{
 		Issue:                  issue,
 		TotalSubTasks:          len(subtasks),
 		TotalChecklistItems:    0,
 		Mappings:               make([]ChecklistMapping, 0, len(subtasks)),
-		UnmappedSubTasks:       make([]hermes.SubTask, 0),
-		UnmappedChecklistItems: make([]hermes.ChecklistItem, 0),
+		UnmappedSubTasks:       make([]WorkItem, 0),
+		UnmappedChecklistItems: make([]ghissue.ChecklistItem, 0),
 		Notes:                  make([]string, 0, 4),
 	}
 	if issue == nil {
-		result.State = hermes.IssueStateBlocked
+		result.State = ghissue.IssueStateBlocked
 		result.NeedsHumanConfirmation = true
 		result.Notes = append(result.Notes, "issue unavailable")
 		return result
@@ -65,12 +65,12 @@ func buildChecklistMapping(issue *hermes.IssueContext, subtasks []hermes.SubTask
 
 	result.TotalChecklistItems = len(issue.Checklist)
 	if len(issue.Checklist) == 0 {
-		result.State = hermes.IssueStateDrafted
+		result.State = ghissue.IssueStateDrafted
 		result.Notes = append(result.Notes, "no checklist items found in issue body")
 		return result
 	}
 	if len(subtasks) == 0 {
-		result.State = hermes.IssueStatePlanned
+		result.State = ghissue.IssueStatePlanned
 		result.UnmappedChecklistItems = append(result.UnmappedChecklistItems, issue.Checklist...)
 		result.Notes = append(result.Notes, "no Hermes subtasks available for checklist mapping")
 		return result
@@ -144,11 +144,11 @@ func buildChecklistMapping(issue *hermes.IssueContext, subtasks []hermes.SubTask
 
 	switch {
 	case result.NeedsHumanConfirmation:
-		result.State = hermes.IssueStateBlocked
+		result.State = ghissue.IssueStateBlocked
 	case len(result.UnmappedSubTasks) > 0 || len(result.UnmappedChecklistItems) > 0:
-		result.State = hermes.IssueStateChecklistUnsynced
+		result.State = ghissue.IssueStateChecklistUnsynced
 	default:
-		result.State = hermes.IssueStateChecklistSynced
+		result.State = ghissue.IssueStateChecklistSynced
 		result.ChecklistSynced = true
 	}
 
@@ -161,7 +161,7 @@ func buildChecklistMapping(issue *hermes.IssueContext, subtasks []hermes.SubTask
 	return result
 }
 
-func hasChecklistDeclarations(subtasks []hermes.SubTask) bool {
+func hasChecklistDeclarations(subtasks []WorkItem) bool {
 	for _, subTask := range subtasks {
 		if len(subTask.ChecklistItemIDs) > 0 {
 			return true
@@ -170,7 +170,7 @@ func hasChecklistDeclarations(subtasks []hermes.SubTask) bool {
 	return false
 }
 
-func buildDeclaredChecklistMapping(result ChecklistMappingResult, issue *hermes.IssueContext, subtasks []hermes.SubTask) ChecklistMappingResult {
+func buildDeclaredChecklistMapping(result ChecklistMappingResult, issue *ghissue.IssueContext, subtasks []WorkItem) ChecklistMappingResult {
 	itemByID := make(map[string]int, len(issue.Checklist))
 	for idx, item := range issue.Checklist {
 		itemByID[item.ID] = idx
@@ -223,11 +223,11 @@ func buildDeclaredChecklistMapping(result ChecklistMappingResult, issue *hermes.
 
 	switch {
 	case result.NeedsHumanConfirmation:
-		result.State = hermes.IssueStateBlocked
+		result.State = ghissue.IssueStateBlocked
 	case len(result.UnmappedChecklistItems) > 0:
-		result.State = hermes.IssueStateChecklistUnsynced
+		result.State = ghissue.IssueStateChecklistUnsynced
 	default:
-		result.State = hermes.IssueStateChecklistSynced
+		result.State = ghissue.IssueStateChecklistSynced
 		result.ChecklistSynced = true
 	}
 	if len(result.UnmappedChecklistItems) > 0 {

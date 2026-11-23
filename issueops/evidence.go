@@ -3,8 +3,6 @@ package issueops
 import (
 	"fmt"
 	"strings"
-
-	"github.com/chimerakang/alice-core/hermes"
 )
 
 func buildEvidenceRecords(req RecordEvidenceRequest) []EvidenceRecord {
@@ -74,7 +72,7 @@ func buildEvidenceRecords(req RecordEvidenceRequest) []EvidenceRecord {
 	return records
 }
 
-func traceSubTaskReference(task hermes.SubTask, idx, total int) string {
+func traceSubTaskReference(task WorkItem, idx, total int) string {
 	if strings.TrimSpace(task.ID) != "" {
 		return "subtask:" + strings.TrimSpace(task.ID)
 	}

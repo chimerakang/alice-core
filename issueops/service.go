@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chimerakang/alice-core/hermes"
+	"github.com/chimerakang/alice-core/ghissue"
 )
 
 // IssueOps describes the high-level GitHub issue workflow surface.
 type IssueOps interface {
-	LoadIssue(ctx context.Context, projectDir string, issueNumber int) (*hermes.IssueContext, error)
-	LoadIssueChecklistMapping(ctx context.Context, projectDir string, issueNumber int, subtasks []hermes.SubTask) (ChecklistMappingResult, error)
-	CommentDone(ctx context.Context, projectDir string, issueNumber int, finalState hermes.TaskState, notes string) error
+	LoadIssue(ctx context.Context, projectDir string, issueNumber int) (*ghissue.IssueContext, error)
+	LoadIssueChecklistMapping(ctx context.Context, projectDir string, issueNumber int, subtasks []WorkItem) (ChecklistMappingResult, error)
+	CommentDone(ctx context.Context, projectDir string, issueNumber int, summary ghissue.CompletionSummary, notes string) error
 	CommentBudgetExceeded(ctx context.Context, projectDir string, issueNumber int, used, max int) error
 	ApplyLabel(ctx context.Context, projectDir string, issueNumber int, label string) error
 	PlanIssue(ctx context.Context, req PlanIssueRequest) error
@@ -22,7 +22,7 @@ type IssueOps interface {
 	CloseIssue(ctx context.Context, req CloseIssueRequest) (CloseReadinessResult, error)
 }
 
-// Service is the default IssueOps implementation backed by hermes GitHub helpers.
+// Service is the default IssueOps implementation backed by the ghissue package.
 type Service struct{}
 
 // New returns a stateless IssueOps service.
@@ -74,7 +74,7 @@ type PlanIssueRequest struct {
 	PlannerModel  string
 	ExecutorModel string
 	Goal          string
-	Tasks         []hermes.SubTask
+	Tasks         []WorkItem
 	CommentStart  bool
 	WritePlan     bool
 }
@@ -85,7 +85,7 @@ type RecordEvidenceRequest struct {
 	IssueNumber      int
 	Index            int
 	Total            int
-	SubTask          hermes.SubTask
+	SubTask          WorkItem
 	Result           string
 	Tokens           int
 	Completed        int
@@ -100,7 +100,7 @@ type RecordEvidenceRequest struct {
 type SyncChecklistRequest struct {
 	ProjectDir           string
 	IssueNumber          int
-	SubTasks             []hermes.SubTask
+	SubTasks             []WorkItem
 	DryRun               bool
 	ChecklistMapping     *ChecklistMappingResult
 	RequireHumanDecision bool
@@ -108,7 +108,7 @@ type SyncChecklistRequest struct {
 
 // ChecklistSyncGuard records the guard state used before mutating the issue body.
 type ChecklistSyncGuard struct {
-	IssueState             hermes.IssueState
+	IssueState             ghissue.IssueState
 	HasBlockingLabel       bool
 	HasCompletedItems      bool
 	HasBodyChange          bool
@@ -117,8 +117,8 @@ type ChecklistSyncGuard struct {
 
 // CanWrite reports whether the issue body may be updated safely.
 func (g ChecklistSyncGuard) CanWrite() bool {
-	return g.IssueState != hermes.IssueStateClosed &&
-		g.IssueState != hermes.IssueStateBlocked &&
+	return g.IssueState != ghissue.IssueStateClosed &&
+		g.IssueState != ghissue.IssueStateBlocked &&
 		!g.HasBlockingLabel &&
 		g.HasCompletedItems &&
 		g.HasBodyChange &&
@@ -143,11 +143,11 @@ const (
 
 // SyncChecklistResult describes the checklist synchronization preview and outcome.
 type SyncChecklistResult struct {
-	Issue      *hermes.IssueContext
-	State      hermes.IssueState
+	Issue      *ghissue.IssueContext
+	State      ghissue.IssueState
 	DryRun     bool
 	Guard      ChecklistSyncGuard
-	Preview    hermes.ChecklistSyncPreview
+	Preview    ghissue.ChecklistSyncPreview
 	WouldWrite bool
 	Wrote      bool
 	Outcome    SyncOutcome
@@ -173,10 +173,10 @@ type CloseIssueRequest struct {
 
 // CloseReadinessResult summarizes the current lifecycle and close guard state.
 type CloseReadinessResult struct {
-	Issue              *hermes.IssueContext
-	Reconciliation     hermes.IssueReconciliation
-	State              hermes.IssueState
-	Guard              hermes.IssueCloseReadiness
+	Issue              *ghissue.IssueContext
+	Reconciliation     ghissue.IssueReconciliation
+	State              ghissue.IssueState
+	Guard              ghissue.IssueCloseReadiness
 	RequiredCloseLabel string
 	HasRequiredLabel   bool
 	Notes              []string
@@ -188,12 +188,12 @@ type CloseReadinessResult struct {
 // IssueOperationRecovery captures the retry metadata for a blocked GitHub
 // issue operation.
 type IssueOperationRecovery struct {
-	State       hermes.IssueState `json:"state"`
-	Operation   string            `json:"operation"`
-	RetryAction string            `json:"retry_action"`
-	Retryable   bool              `json:"retryable"`
-	Message     string            `json:"message,omitempty"`
-	Error       string            `json:"error,omitempty"`
+	State       ghissue.IssueState `json:"state"`
+	Operation   string             `json:"operation"`
+	RetryAction string             `json:"retry_action"`
+	Retryable   bool               `json:"retryable"`
+	Message     string             `json:"message,omitempty"`
+	Error       string             `json:"error,omitempty"`
 }
 
 func blockedRecovery(operation, retryAction string, err error) *IssueOperationRecovery {
@@ -201,7 +201,7 @@ func blockedRecovery(operation, retryAction string, err error) *IssueOperationRe
 		return nil
 	}
 	return &IssueOperationRecovery{
-		State:       hermes.IssueStateBlocked,
+		State:       ghissue.IssueStateBlocked,
 		Operation:   strings.TrimSpace(operation),
 		RetryAction: strings.TrimSpace(retryAction),
 		Retryable:   true,
@@ -211,12 +211,12 @@ func blockedRecovery(operation, retryAction string, err error) *IssueOperationRe
 }
 
 // LoadIssue fetches the latest GitHub issue snapshot.
-func (s *Service) LoadIssue(ctx context.Context, projectDir string, issueNumber int) (*hermes.IssueContext, error) {
-	return hermes.FetchIssue(ctx, projectDir, issueNumber)
+func (s *Service) LoadIssue(ctx context.Context, projectDir string, issueNumber int) (*ghissue.IssueContext, error) {
+	return ghissue.FetchIssue(ctx, projectDir, issueNumber)
 }
 
 // LoadIssueChecklistMapping fetches the issue and builds a sub-task to checklist mapping.
-func (s *Service) LoadIssueChecklistMapping(ctx context.Context, projectDir string, issueNumber int, subtasks []hermes.SubTask) (ChecklistMappingResult, error) {
+func (s *Service) LoadIssueChecklistMapping(ctx context.Context, projectDir string, issueNumber int, subtasks []WorkItem) (ChecklistMappingResult, error) {
 	issue, err := s.LoadIssue(ctx, projectDir, issueNumber)
 	if err != nil {
 		return ChecklistMappingResult{}, err
@@ -225,25 +225,25 @@ func (s *Service) LoadIssueChecklistMapping(ctx context.Context, projectDir stri
 }
 
 // BuildChecklistMapping builds a deterministic mapping from Hermes subtasks to GitHub checklist items.
-func (s *Service) BuildChecklistMapping(issue *hermes.IssueContext, subtasks []hermes.SubTask) ChecklistMappingResult {
+func (s *Service) BuildChecklistMapping(issue *ghissue.IssueContext, subtasks []WorkItem) ChecklistMappingResult {
 	return buildChecklistMapping(issue, subtasks)
 }
 
 // CommentDone posts the terminal Hermes completion comment.
-func (s *Service) CommentDone(ctx context.Context, projectDir string, issueNumber int, finalState hermes.TaskState, notes string) error {
-	body := hermes.CommentDoneWithNote(finalState, notes)
-	return hermes.PostComment(ctx, projectDir, issueNumber, body)
+func (s *Service) CommentDone(ctx context.Context, projectDir string, issueNumber int, summary ghissue.CompletionSummary, notes string) error {
+	body := ghissue.CommentDone(summary, notes)
+	return ghissue.PostComment(ctx, projectDir, issueNumber, body)
 }
 
 // CommentBudgetExceeded posts the budget exceeded comment.
 func (s *Service) CommentBudgetExceeded(ctx context.Context, projectDir string, issueNumber int, used, max int) error {
-	body := hermes.CommentBudgetExceeded(used, max)
-	return hermes.PostComment(ctx, projectDir, issueNumber, body)
+	body := ghissue.CommentBudgetExceeded(used, max)
+	return ghissue.PostComment(ctx, projectDir, issueNumber, body)
 }
 
 // ApplyLabel attaches a label to the issue.
 func (s *Service) ApplyLabel(ctx context.Context, projectDir string, issueNumber int, label string) error {
-	return hermes.ApplyLabel(ctx, projectDir, issueNumber, label)
+	return ghissue.ApplyLabel(ctx, projectDir, issueNumber, label)
 }
 
 // PlanIssue writes the plan scaffolding into GitHub issue state.
@@ -252,13 +252,13 @@ func (s *Service) PlanIssue(ctx context.Context, req PlanIssueRequest) error {
 		return nil
 	}
 	if req.CommentStart {
-		body := hermes.CommentStarted(req.PlannerModel, req.ExecutorModel)
-		if err := hermes.PostComment(ctx, req.ProjectDir, req.IssueNumber, body); err != nil {
+		body := ghissue.CommentStarted(req.PlannerModel, req.ExecutorModel)
+		if err := ghissue.PostComment(ctx, req.ProjectDir, req.IssueNumber, body); err != nil {
 			return err
 		}
 	}
 	if req.WritePlan {
-		if err := hermes.WritePlanToIssue(ctx, req.ProjectDir, req.IssueNumber, req.Goal, req.Tasks); err != nil {
+		if err := ghissue.WritePlan(ctx, req.ProjectDir, req.IssueNumber, planEntries(req.Tasks)); err != nil {
 			return err
 		}
 	}
@@ -274,7 +274,7 @@ func (s *Service) RecordEvidence(ctx context.Context, req RecordEvidenceRequest)
 	if strings.TrimSpace(body) == "" {
 		return nil
 	}
-	return hermes.PostComment(ctx, req.ProjectDir, req.IssueNumber, body)
+	return ghissue.PostComment(ctx, req.ProjectDir, req.IssueNumber, body)
 }
 
 // SyncChecklist syncs completed Hermes sub-tasks back into the issue body.
@@ -286,7 +286,7 @@ func (s *Service) SyncChecklist(ctx context.Context, req SyncChecklistRequest) (
 	if err != nil {
 		return SyncChecklistResult{
 			DryRun:   req.DryRun,
-			State:    hermes.IssueStateBlocked,
+			State:    ghissue.IssueStateBlocked,
 			Outcome:  SyncOutcomeLoadFailed,
 			Reason:   fmt.Sprintf("failed to load issue: %v", err),
 			Recovery: blockedRecovery("sync-checklist", "retry-sync-checklist", err),
@@ -294,16 +294,17 @@ func (s *Service) SyncChecklist(ctx context.Context, req SyncChecklistRequest) (
 		}, err
 	}
 
-	preview := hermes.BuildChecklistSyncPreview(issue.Body, req.SubTasks)
+	preview := ghissue.BuildChecklistSyncPreview(issue.Body, completedWork(req.SubTasks))
 	guard := ChecklistSyncGuard{
-		IssueState:        hermes.IssueStateFromGitHub(issue.State),
-		HasBlockingLabel:  hermes.HasLabel(issue, "blocked"),
+		IssueState:        ghissue.IssueStateFromGitHub(issue.State),
+		HasBlockingLabel:  ghissue.HasLabel(issue, "blocked"),
 		HasCompletedItems: len(preview.CompletedDescriptions) > 0,
 		HasBodyChange:     preview.Changed,
 	}
-	if req.ChecklistMapping != nil {
-		guard.NeedsHumanConfirmation = req.ChecklistMapping.NeedsHumanConfirmation || req.RequireHumanDecision
-	}
+	// RequireHumanDecision must hold even without a mapping: callers set it
+	// precisely when the mapping could not be loaded.
+	guard.NeedsHumanConfirmation = req.RequireHumanDecision ||
+		(req.ChecklistMapping != nil && req.ChecklistMapping.NeedsHumanConfirmation)
 
 	result := SyncChecklistResult{
 		Issue:      issue,
@@ -329,15 +330,15 @@ func (s *Service) SyncChecklist(ctx context.Context, req SyncChecklistRequest) (
 	if !result.Guard.CanWrite() {
 		switch {
 		case result.Guard.NeedsHumanConfirmation:
-			result.State = hermes.IssueStateBlocked
+			result.State = ghissue.IssueStateBlocked
 			result.Outcome = SyncOutcomeNeedsHuman
 			result.Reason = "checklist mapping requires human confirmation"
-		case result.Guard.IssueState == hermes.IssueStateClosed:
+		case result.Guard.IssueState == ghissue.IssueStateClosed:
 			result.Outcome = SyncOutcomeIssueState
 			result.Reason = "issue is closed"
 			result.Notes = append(result.Notes, "issue is closed")
-		case result.Guard.IssueState == hermes.IssueStateBlocked || result.Guard.HasBlockingLabel:
-			result.State = hermes.IssueStateBlocked
+		case result.Guard.IssueState == ghissue.IssueStateBlocked || result.Guard.HasBlockingLabel:
+			result.State = ghissue.IssueStateBlocked
 			result.Outcome = SyncOutcomeIssueState
 			result.Reason = "issue is blocked"
 			result.Notes = append(result.Notes, "issue is blocked")
@@ -349,21 +350,21 @@ func (s *Service) SyncChecklist(ctx context.Context, req SyncChecklistRequest) (
 		return result, nil
 	}
 	if req.DryRun {
-		result.State = hermes.IssueStateChecklistSynced
+		result.State = ghissue.IssueStateChecklistSynced
 		result.Outcome = SyncOutcomeDryRun
 		result.Reason = "dry-run: no GitHub write performed"
 		result.Notes = append(result.Notes, "dry-run: no GitHub write performed")
 		return result, nil
 	}
-	if err := hermes.UpdateIssueBody(ctx, req.ProjectDir, req.IssueNumber, preview.BodyAfter); err != nil {
-		result.State = hermes.IssueStateBlocked
+	if err := ghissue.UpdateIssueBody(ctx, req.ProjectDir, req.IssueNumber, preview.BodyAfter); err != nil {
+		result.State = ghissue.IssueStateBlocked
 		result.Outcome = SyncOutcomeFailed
 		result.Reason = fmt.Sprintf("GitHub checklist sync failed: %v", err)
 		result.Recovery = blockedRecovery("sync-checklist", "retry-sync-checklist", err)
 		result.Notes = append(result.Notes, fmt.Sprintf("GitHub checklist sync failed: %v", err))
 		return result, err
 	}
-	result.State = hermes.IssueStateChecklistSynced
+	result.State = ghissue.IssueStateChecklistSynced
 	result.Outcome = SyncOutcomeWrote
 	result.Wrote = true
 	return result, nil
@@ -374,7 +375,7 @@ func (s *Service) AssessCloseReadiness(ctx context.Context, req AssessCloseReadi
 	issue, err := s.LoadIssue(ctx, req.ProjectDir, req.IssueNumber)
 	if err != nil {
 		return CloseReadinessResult{
-			State:    hermes.IssueStateBlocked,
+			State:    ghissue.IssueStateBlocked,
 			Recovery: blockedRecovery("close", "retry-close", err),
 			Notes:    []string{fmt.Sprintf("failed to load issue: %v", err)},
 		}, err
@@ -391,14 +392,14 @@ func (s *Service) CloseIssue(ctx context.Context, req CloseIssueRequest) (CloseR
 	if req.DryRun || !readiness.CanAutoClose {
 		return readiness, nil
 	}
-	if err := hermes.CloseIssue(ctx, req.ProjectDir, req.IssueNumber); err != nil {
-		readiness.State = hermes.IssueStateBlocked
+	if err := ghissue.CloseIssue(ctx, req.ProjectDir, req.IssueNumber); err != nil {
+		readiness.State = ghissue.IssueStateBlocked
 		readiness.CanAutoClose = false
 		readiness.Recovery = blockedRecovery("close", "retry-close", err)
 		readiness.Notes = append(readiness.Notes, fmt.Sprintf("GitHub close failed: %v", err))
 		return readiness, err
 	}
-	readiness.State = hermes.IssueStateClosed
+	readiness.State = ghissue.IssueStateClosed
 	readiness.Closed = true
 	return readiness, nil
 }
@@ -453,8 +454,8 @@ func buildEvidenceComment(req RecordEvidenceRequest) string {
 	return strings.TrimSpace(sb.String())
 }
 
-func buildCloseReadiness(issue *hermes.IssueContext, req AssessCloseReadinessRequest) CloseReadinessResult {
-	rec := hermes.ReconcileIssueCompletion(issue)
+func buildCloseReadiness(issue *ghissue.IssueContext, req AssessCloseReadinessRequest) CloseReadinessResult {
+	rec := ghissue.ReconcileIssueCompletion(issue)
 	result := CloseReadinessResult{
 		Issue:              issue,
 		Reconciliation:     rec,
@@ -462,45 +463,45 @@ func buildCloseReadiness(issue *hermes.IssueContext, req AssessCloseReadinessReq
 		HasRequiredLabel:   true,
 	}
 	if issue == nil {
-		result.State = hermes.IssueStateBlocked
+		result.State = ghissue.IssueStateBlocked
 		result.Notes = append(result.Notes, "issue unavailable")
 		return result
 	}
 
 	switch strings.ToLower(strings.TrimSpace(issue.State)) {
 	case "closed":
-		result.State = hermes.IssueStateClosed
+		result.State = ghissue.IssueStateClosed
 	case "blocked":
-		result.State = hermes.IssueStateBlocked
+		result.State = ghissue.IssueStateBlocked
 	default:
 		switch {
-		case hermes.HasLabel(issue, "blocked"):
-			result.State = hermes.IssueStateBlocked
+		case ghissue.HasLabel(issue, "blocked"):
+			result.State = ghissue.IssueStateBlocked
 		case rec.HasUnchecked():
-			if _, ok := hermes.RecentSuccessfulHermesCompletion(issue); ok {
-				result.State = hermes.IssueStateChecklistUnsynced
+			if _, ok := ghissue.RecentSuccessfulHermesCompletion(issue); ok {
+				result.State = ghissue.IssueStateChecklistUnsynced
 				result.Notes = append(result.Notes, "issue evidence indicates checklist is unsynced")
 			} else {
-				result.State = hermes.IssueStateEvidenceCollected
+				result.State = ghissue.IssueStateEvidenceCollected
 			}
 		case !req.ReviewAccepted || !req.ValidationPassed:
-			result.State = hermes.IssueStateBlocked
+			result.State = ghissue.IssueStateBlocked
 		case req.RequiredCloseLabel != "":
-			if hermes.HasLabel(issue, req.RequiredCloseLabel) {
-				result.State = hermes.IssueStateReadyToClose
+			if ghissue.HasLabel(issue, req.RequiredCloseLabel) {
+				result.State = ghissue.IssueStateReadyToClose
 			} else {
-				result.State = hermes.IssueStateChecklistSynced
+				result.State = ghissue.IssueStateChecklistSynced
 				result.HasRequiredLabel = false
 				result.Notes = append(result.Notes, fmt.Sprintf("missing required label %q", req.RequiredCloseLabel))
 			}
 		default:
-			result.State = hermes.IssueStateReadyToClose
+			result.State = ghissue.IssueStateReadyToClose
 		}
 	}
 
-	result.Guard = hermes.IssueCloseReadiness{
+	result.Guard = ghissue.IssueCloseReadiness{
 		State:                     result.State,
-		HasBlockingLabel:          hermes.HasLabel(issue, "blocked"),
+		HasBlockingLabel:          ghissue.HasLabel(issue, "blocked"),
 		ChecklistSynced:           !rec.HasUnchecked(),
 		ReviewAccepted:            req.ReviewAccepted,
 		ValidationPassed:          req.ValidationPassed,
@@ -510,7 +511,7 @@ func buildCloseReadiness(issue *hermes.IssueContext, req AssessCloseReadinessReq
 	if rec.HasUnchecked() {
 		result.Notes = append(result.Notes, rec.CommentNote())
 	}
-	if result.State == hermes.IssueStateClosed {
+	if result.State == ghissue.IssueStateClosed {
 		result.CanAutoClose = false
 	}
 	return result
