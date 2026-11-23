@@ -189,6 +189,9 @@ type Task struct {
 	StartedAt *time.Time
 	// FinishedAt is when the task reached a terminal status; nil otherwise.
 	FinishedAt *time.Time
+	// LastActivityAt is when the agent last produced output; nil before the
+	// first run. A running task whose activity has gone stale may be stuck.
+	LastActivityAt *time.Time
 }
 
 // NewTask is the input to CreateTask.

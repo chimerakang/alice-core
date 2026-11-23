@@ -43,6 +43,10 @@ type Options struct {
 	OutputLimit   int
 	CorrelationID string // auto-generated if empty
 	LogPrefix     string // e.g. "process" or "hermes.process"
+	// LogLabel, when set, is logged in place of the command line. Use it
+	// when the arguments are long or should not be written to the log, such
+	// as a full prompt.
+	LogLabel string
 }
 
 // ProcessCmd wraps exec.Cmd so Start/Wait/Run share the same logging envelope.
@@ -116,7 +120,7 @@ func (r *Runner) Command(ctx context.Context, opts Options, name string, args ..
 		Cmd:     cmd,
 		corrID:  correlationID(opts.CorrelationID),
 		prefix:  logPrefix(opts.LogPrefix),
-		label:   logName(name, args),
+		label:   logLabel(opts.LogLabel, name, args),
 		timeout: timeout,
 	}, cancel
 }
@@ -210,6 +214,13 @@ func logPrefix(prefix string) string {
 		return "process"
 	}
 	return prefix
+}
+
+func logLabel(label, name string, args []string) string {
+	if strings.TrimSpace(label) != "" {
+		return label
+	}
+	return logName(name, args)
 }
 
 func logName(name string, args []string) string {

@@ -16,7 +16,7 @@ Reusable Go library extracted from [Alice](https://github.com/chimerakang/alice)
 | `chat/` | `ChatContext` and its lifecycle, native session policy, `ExecutionLifecycle`, error recovery policy. No orchestrator dependency |
 | `errorclass/` | Classifies error text as rate limit, overload, network reset, timeout, EOF, context overflow, or killed |
 | `ghissue/` | GitHub issues via the `gh` CLI: fetch, checklist parsing and write-back, comments, labels, issue lifecycle FSM |
-| `fleet/` | Command layer for running agents across projects: project registry, task model and lifecycle state machine, append-only task event log, all in SQLite |
+| `fleet/` | Command layer for running agents across projects: project registry, task model and lifecycle state machine, append-only task event log, and a `Runner` that executes one agent per task in its own worktree |
 | `worktree/` | Per-task git worktrees: create, attach, list, prune, and removal that refuses uncommitted work |
 | `verify/` | Acceptance checks judged by exit code: `Step` interface, shell-command steps, `go build` / `tsc` / `jq` steps, path deny-list guard |
 | `engine/` | Plan-execute FSM, recovery policy for plan-execute modes, review engine, graph walker. Re-exports `chat` types for compatibility |
@@ -176,6 +176,24 @@ err = store.SetWorkspace(ctx, task.ID, branch, path)
 // Every status change is validated and written to the task's event log.
 task, err = store.Transition(ctx, task.ID, fleet.StatusRunning, "slot free")
 ```
+
+`fleet.Runner` runs a task's agent to the end of one turn and leaves the task in the status that describes how it ended:
+
+```go
+runner := &fleet.Runner{
+    Store:      store,
+    Worktrees:  worktree.Layout{Root: "./data/worktrees"},
+    ReportRoot: "./data/reports", // scout reports land here
+}
+res, err := runner.Run(ctx, task.ID, fleet.RunOptions{}) // blocks; creates the worktree if needed
+// res.Outcome: finished | needs_decision | failed | cancelled
+
+runner.Interrupt(task.ID, "wrong approach")                              // stop, keep the session
+runner.Run(ctx, task.ID, fleet.RunOptions{Instruction: "try it this way"}) // resume with instructions
+runner.Cancel(task.ID, "not needed")                                     // interrupt, then kill after StopGrace
+```
+
+A `ShapeScout` task gets only read-only tools; its final message is saved as `report.md`.
 
 Task lifecycle: `queued → running → verifying → review_ready → done`, with `needs_decision`, `failed` and `cancelled` as the exits. `fleet.CanTransition` holds the full table; an illegal change returns a `*fleet.TransitionError`.
 

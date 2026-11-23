@@ -96,24 +96,25 @@ func (s *Store) CreateTask(ctx context.Context, in NewTask) (Task, error) {
 
 const taskColumns = `id, project_id, shape, goal, source_kind, issue_number, trust_mode, model, priority,
 	status, status_reason, branch, worktree_path, session_id,
-	input_tokens, output_tokens, cost_usd, created_at, updated_at, started_at, finished_at`
+	input_tokens, output_tokens, cost_usd, created_at, updated_at, started_at, finished_at, last_activity_at`
 
 func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 	var (
 		t                          Task
 		shape, kind, trust, status string
 		created, updated           int64
-		started, finished          sql.NullInt64
+		started, finished, active  sql.NullInt64
 	)
 	err := row.Scan(&t.ID, &t.ProjectID, &shape, &t.Goal, &kind, &t.Source.IssueNumber, &trust, &t.Model, &t.Priority,
 		&status, &t.StatusReason, &t.Branch, &t.WorktreePath, &t.SessionID,
-		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &created, &updated, &started, &finished)
+		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &created, &updated, &started, &finished, &active)
 	if err != nil {
 		return Task{}, err
 	}
 	t.Shape, t.Source.Kind, t.TrustMode, t.Status = Shape(shape), SourceKind(kind), TrustMode(trust), Status(status)
 	t.CreatedAt, t.UpdatedAt = fromMillis(created), fromMillis(updated)
 	t.StartedAt, t.FinishedAt = fromNullMillis(started), fromNullMillis(finished)
+	t.LastActivityAt = fromNullMillis(active)
 	return t, nil
 }
 
@@ -307,6 +308,34 @@ func (s *Store) AppendEvent(ctx context.Context, taskID, eventType string, paylo
 			return fmt.Errorf("fleet: load task: %w", err)
 		}
 		ev, err = appendEvent(ctx, tx, taskID, eventType, payload, toMillis(s.now()))
+		return err
+	})
+	if err != nil {
+		return Event{}, err
+	}
+	return ev, nil
+}
+
+// RecordActivity appends an event produced by the task's agent and stamps the
+// task's LastActivityAt, in one transaction. Use it for everything the agent
+// emits; use AppendEvent for events that are not signs of life.
+func (s *Store) RecordActivity(ctx context.Context, taskID, eventType string, payload any) (Event, error) {
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" {
+		return Event{}, fmt.Errorf("%w: event type is required", ErrInvalidTask)
+	}
+	var ev Event
+	err := s.inTx(ctx, func(tx querier) error {
+		now := toMillis(s.now())
+		res, err := tx.ExecContext(ctx, `UPDATE fleet_tasks SET last_activity_at = ?, updated_at = ? WHERE id = ?`,
+			now, now, taskID)
+		if err != nil {
+			return fmt.Errorf("fleet: record activity: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("%w: %s", ErrTaskNotFound, taskID)
+		}
+		ev, err = appendEvent(ctx, tx, taskID, eventType, payload, now)
 		return err
 	})
 	if err != nil {

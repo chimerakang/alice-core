@@ -65,6 +65,13 @@ func SetForcePromptCaching5m(v bool) {
 	forcePromptCaching5m.Store(v)
 }
 
+// CLIEnv returns the environment to launch the claude CLI with: the current
+// environment minus the variables that make it believe it is nested inside
+// another Claude Code session, plus the switches this library relies on.
+func CLIEnv() []string {
+	return cleanEnvForCLI()
+}
+
 // cleanEnvForCLI returns the current env without Claude Code nesting-detection vars.
 func cleanEnvForCLI() []string {
 	blocked := map[string]bool{
