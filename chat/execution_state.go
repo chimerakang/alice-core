@@ -1,4 +1,4 @@
-package engine
+package chat
 
 import (
 	"fmt"

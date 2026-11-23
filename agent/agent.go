@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/chimerakang/alice-core/client"
-	"github.com/chimerakang/alice-core/engine"
+	"github.com/chimerakang/alice-core/chat"
 	"github.com/chimerakang/alice-core/memory"
 )
 
@@ -25,7 +25,7 @@ func directPlanViaGraph() bool {
 
 // projectState holds per-project session state and token stats.
 type projectState struct {
-	ctx              *engine.ChatContext
+	ctx              *chat.ChatContext
 	stats            TokenStats
 	lastTotalCostUSD float64
 	lastCostSession  string
@@ -69,7 +69,7 @@ type Agent struct {
 	topicID              int
 	currentModelOverride string
 	lastUsedModel        string
-	chatContext          *engine.ChatContext
+	chatContext          *chat.ChatContext
 	enablePlanMode       bool
 	planModel            string
 	executeModel         string
@@ -79,7 +79,7 @@ type Agent struct {
 	runMu                sync.Mutex
 	cancelFunc           context.CancelFunc
 	cancelMu             sync.Mutex
-	execution            *engine.ExecutionLifecycle
+	execution            *chat.ExecutionLifecycle
 
 	// Optional injected dependencies — all nil-safe.
 	storage  StorageBackend
@@ -117,18 +117,18 @@ type Options struct {
 
 // NewAgent creates an Agent with the given client, project directory, and channel/topic IDs.
 func NewAgent(c client.Client, projectDir string, channelID int64, topicID int) *Agent {
-	return NewAgentWithContext(c, engine.NewChatContext(channelID, topicID, projectDir), Options{})
+	return NewAgentWithContext(c, chat.NewChatContext(channelID, topicID, projectDir), Options{})
 }
 
 // NewAgentWithOptions creates an Agent with full option control.
 func NewAgentWithOptions(c client.Client, projectDir string, channelID int64, topicID int, opts Options) *Agent {
-	return NewAgentWithContext(c, engine.NewChatContext(channelID, topicID, projectDir), opts)
+	return NewAgentWithContext(c, chat.NewChatContext(channelID, topicID, projectDir), opts)
 }
 
 // NewAgentWithContext creates an Agent from an existing ChatContext.
-func NewAgentWithContext(c client.Client, chatCtx *engine.ChatContext, opts Options) *Agent {
+func NewAgentWithContext(c client.Client, chatCtx *chat.ChatContext, opts Options) *Agent {
 	if chatCtx == nil {
-		chatCtx = engine.NewChatContext(0, 0, "")
+		chatCtx = chat.NewChatContext(0, 0, "")
 	}
 	dlSize := opts.DecisionLogSize
 	if dlSize <= 0 {
@@ -147,7 +147,7 @@ func NewAgentWithContext(c client.Client, chatCtx *engine.ChatContext, opts Opti
 		chatContext:        chatCtx,
 		stickySession:      true,
 		sessionIdleTimeout: 24 * time.Hour,
-		execution:          engine.NewExecutionLifecycle(),
+		execution:          chat.NewExecutionLifecycle(),
 		storage:            opts.Storage,
 		events:             opts.Events,
 		metrics:            opts.Metrics,
@@ -197,7 +197,7 @@ func (a *Agent) Reset() {
 	a.planModel = ""
 	a.executeModel = ""
 	if a.chatContext != nil {
-		a.chatContext.Sessions = make(map[engine.BackendKind]string)
+		a.chatContext.Sessions = make(map[chat.BackendKind]string)
 		a.chatContext.RecentMsgs = nil
 		a.chatContext.LastActivity = time.Now()
 	}
@@ -206,7 +206,7 @@ func (a *Agent) Reset() {
 // ClearSession resets backend session IDs while preserving usage stats.
 func (a *Agent) ClearSession() {
 	ps := a.current()
-	ps.ctx.Sessions = make(map[engine.BackendKind]string)
+	ps.ctx.Sessions = make(map[chat.BackendKind]string)
 	ps.ctx.RecentMsgs = nil
 	a.currentModelOverride = ""
 	a.lastUsedModel = ""
@@ -220,7 +220,7 @@ func (a *Agent) Abort() bool {
 	a.cancelMu.Lock()
 	defer a.cancelMu.Unlock()
 	if a.cancelFunc != nil {
-		a.transitionExecution(engine.ExecutionStateCancelling, "agent_abort")
+		a.transitionExecution(chat.ExecutionStateCancelling, "agent_abort")
 		a.cancelFunc()
 		a.cancelFunc = nil
 		return true
@@ -259,7 +259,7 @@ func (a *Agent) AddRecentMessage(userMsg, assistantMsg string) {
 }
 
 // RecentMessages returns a snapshot of the conversation bridge.
-func (a *Agent) RecentMessages() []engine.ContextMessage {
+func (a *Agent) RecentMessages() []chat.ContextMessage {
 	return a.current().ctx.RecentMessagesSnapshot()
 }
 
@@ -305,7 +305,7 @@ func (a *Agent) Run(userMessage string, onUpdate func(string, bool)) (string, er
 	}
 	a.cancelMu.Lock()
 	a.cancelFunc = cancel
-	a.transitionExecution(engine.ExecutionStateStarting, "agent_run")
+	a.transitionExecution(chat.ExecutionStateStarting, "agent_run")
 	a.cancelMu.Unlock()
 	defer func() {
 		a.cancelMu.Lock()
@@ -315,8 +315,8 @@ func (a *Agent) Run(userMessage string, onUpdate func(string, bool)) (string, er
 	}()
 
 	ps := a.current()
-	_ = ps.ctx.TransitionState(engine.ChatStateBusy, "agent_run")
-	finalChatState := engine.ChatStateIdle
+	_ = ps.ctx.TransitionState(chat.ChatStateBusy, "agent_run")
+	finalChatState := chat.ChatStateIdle
 	defer func() {
 		_ = ps.ctx.TransitionState(finalChatState, "agent_run_done")
 	}()
@@ -377,8 +377,8 @@ func (a *Agent) Run(userMessage string, onUpdate func(string, bool)) (string, er
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			a.transitionExecution(engine.ExecutionStateRetrying, "agent_retry")
-			recovery := engine.DecideRecovery(engine.RecoveryRequest{
+			a.transitionExecution(chat.ExecutionStateRetrying, "agent_retry")
+			recovery := chat.DecideRecovery(chat.RecoveryRequest{
 				Mode:        "direct_stream",
 				Attempt:     attempt - 1,
 				MaxAttempts: maxRetries,
@@ -396,7 +396,7 @@ func (a *Agent) Run(userMessage string, onUpdate func(string, bool)) (string, er
 			toolCallsForDecision = nil
 		}
 
-		a.transitionExecution(engine.ExecutionStateStreaming, "agent_stream")
+		a.transitionExecution(chat.ExecutionStateStreaming, "agent_stream")
 		resp, userMessage, sessionID, err = a.callStreamWithResumeBridge(ctx, ps, userMessage, selectedBackend, sessionID, a.lastUsedModel, func(toolName string, toolInput map[string]interface{}) {
 			a.toolLog.LogStart(toolName, toolInput, a.channelID, a.topicID, a.projectDir)
 			if a.events != nil {
@@ -423,10 +423,10 @@ func (a *Agent) Run(userMessage string, onUpdate func(string, bool)) (string, er
 			break
 		}
 
-		recoveryReq := engine.RecoveryRequest{Mode: "direct_stream", Attempt: attempt, MaxAttempts: maxRetries, ErrorText: err.Error()}
-		recovery := engine.DecideRecovery(recoveryReq)
-		engine.LogRecoveryDecision(recoveryReq, recovery)
-		if recovery.Action == engine.RecoveryActionRetry {
+		recoveryReq := chat.RecoveryRequest{Mode: "direct_stream", Attempt: attempt, MaxAttempts: maxRetries, ErrorText: err.Error()}
+		recovery := chat.DecideRecovery(recoveryReq)
+		chat.LogRecoveryDecision(recoveryReq, recovery)
+		if recovery.Action == chat.RecoveryActionRetry {
 			log.Printf("[agent] retryable error: %v", err)
 			if resp != nil && resp.SessionID != "" {
 				ps.ctx.SetSession(selectedBackend, resp.SessionID)
@@ -463,13 +463,13 @@ func (a *Agent) Run(userMessage string, onUpdate func(string, bool)) (string, er
 
 	a.logDecision(userMessage, resp.Result, toolCallsForDecision, startTime, resp, nil, routingReason, routingLatency, deltaCost)
 	addToRecentMessages(ps, originalUserMessage, resp.Result)
-	if engine.AssistantAwaitsInput(resp.Result) {
-		finalChatState = engine.ChatStateAwaitingInput
+	if chat.AssistantAwaitsInput(resp.Result) {
+		finalChatState = chat.ChatStateAwaitingInput
 	}
 
 	a.recordLastCallMetrics(a.lastUsedModel, resp.Usage.InputTokens, resp.Usage.OutputTokens, deltaCost)
 	a.recordLastCallCacheMetrics(resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens)
-	a.transitionExecution(engine.ExecutionStateSucceeded, "agent_run_succeeded")
+	a.transitionExecution(chat.ExecutionStateSucceeded, "agent_run_succeeded")
 
 	return resp.Result, nil
 }
@@ -485,10 +485,10 @@ func (a *Agent) runDirect(ctx context.Context, userMessage string, onUpdate func
 		onUpdate(processingStatusForModel(selectedModel), false)
 	}
 	a.lastUsedModel = selectedModel
-	selectedBackend := engine.BackendKindForModel(selectedModel)
+	selectedBackend := chat.BackendKindForModel(selectedModel)
 	ps.ctx.LastBackend = selectedBackend
 	sessionID := ps.ctx.Session(selectedBackend)
-	a.transitionExecution(engine.ExecutionStateStreaming, "agent_run_direct_stream")
+	a.transitionExecution(chat.ExecutionStateStreaming, "agent_run_direct_stream")
 
 	var toolCallsForDecision []ToolExecution
 	resp, userMessage, sessionID, err := a.callStreamWithResumeBridge(ctx, ps, userMessage, selectedBackend, sessionID, selectedModel, func(toolName string, toolInput map[string]interface{}) {
@@ -528,7 +528,7 @@ func (a *Agent) runDirect(ctx context.Context, userMessage string, onUpdate func
 	addToRecentMessages(ps, userMessage, resp.Result)
 	a.recordLastCallMetrics(selectedModel, resp.Usage.InputTokens, resp.Usage.OutputTokens, deltaCost)
 	a.recordLastCallCacheMetrics(resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens)
-	a.transitionExecution(engine.ExecutionStateSucceeded, "agent_run_direct_succeeded")
+	a.transitionExecution(chat.ExecutionStateSucceeded, "agent_run_direct_succeeded")
 	return resp.Result, nil
 }
 
@@ -536,25 +536,25 @@ func (a *Agent) runDirect(ctx context.Context, userMessage string, onUpdate func
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-func (a *Agent) executionLifecycle() *engine.ExecutionLifecycle {
+func (a *Agent) executionLifecycle() *chat.ExecutionLifecycle {
 	if a.execution == nil {
-		a.execution = engine.NewExecutionLifecycle()
+		a.execution = chat.NewExecutionLifecycle()
 	}
 	return a.execution
 }
 
-func (a *Agent) transitionExecution(to engine.ExecutionState, reason string) {
+func (a *Agent) transitionExecution(to chat.ExecutionState, reason string) {
 	if err := a.executionLifecycle().Transition(to, reason); err == nil {
 		return
 	}
 	switch to {
-	case engine.ExecutionStateStarting:
+	case chat.ExecutionStateStarting:
 		if a.executionLifecycle().Snapshot().Terminal {
-			_ = a.executionLifecycle().Transition(engine.ExecutionStateStarting, reason)
+			_ = a.executionLifecycle().Transition(chat.ExecutionStateStarting, reason)
 		}
-	case engine.ExecutionStateStreaming:
-		_ = a.executionLifecycle().Transition(engine.ExecutionStateStarting, reason+"_start")
-		_ = a.executionLifecycle().Transition(engine.ExecutionStateStreaming, reason)
+	case chat.ExecutionStateStreaming:
+		_ = a.executionLifecycle().Transition(chat.ExecutionStateStarting, reason+"_start")
+		_ = a.executionLifecycle().Transition(chat.ExecutionStateStreaming, reason)
 	}
 }
 
@@ -563,10 +563,10 @@ func (a *Agent) finishExecutionError(err error, reason string) {
 		return
 	}
 	if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "agent aborted by user") {
-		a.transitionExecution(engine.ExecutionStateCancelled, reason+"_cancelled")
+		a.transitionExecution(chat.ExecutionStateCancelled, reason+"_cancelled")
 		return
 	}
-	a.transitionExecution(engine.ExecutionStateFailed, reason+"_failed")
+	a.transitionExecution(chat.ExecutionStateFailed, reason+"_failed")
 }
 
 func (a *Agent) current() *projectState {
@@ -574,7 +574,7 @@ func (a *Agent) current() *projectState {
 		return ps
 	}
 	if a.chatContext == nil {
-		a.chatContext = engine.NewChatContext(a.channelID, a.topicID, a.projectDir)
+		a.chatContext = chat.NewChatContext(a.channelID, a.topicID, a.projectDir)
 	}
 	a.chatContext.ProjectDir = a.projectDir
 	ps := &projectState{ctx: a.chatContext}
@@ -618,7 +618,7 @@ func (a *Agent) activeStickyModel(ps *projectState) string {
 	if !a.stickySession || ps == nil || ps.ctx == nil || a.lastUsedModel == "" {
 		return ""
 	}
-	if ps.ctx.Session(engine.BackendKindForModel(a.lastUsedModel)) == "" {
+	if ps.ctx.Session(chat.BackendKindForModel(a.lastUsedModel)) == "" {
 		return ""
 	}
 	return a.lastUsedModel
@@ -628,7 +628,7 @@ func (a *Agent) activeContinuationModel(ps *projectState, msg string) string {
 	if ps == nil || ps.ctx == nil || a.lastUsedModel == "" || !isContinuationMessage(msg) {
 		return ""
 	}
-	if ps.ctx.Session(engine.BackendKindForModel(a.lastUsedModel)) == "" {
+	if ps.ctx.Session(chat.BackendKindForModel(a.lastUsedModel)) == "" {
 		return ""
 	}
 	return a.lastUsedModel
@@ -642,19 +642,19 @@ func (a *Agent) expireIdleStickySession(ps *projectState, now time.Time) {
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
-	if ps.ctx.Session(engine.BackendKindForModel(a.lastUsedModel)) == "" {
+	if ps.ctx.Session(chat.BackendKindForModel(a.lastUsedModel)) == "" {
 		return
 	}
 	if ps.ctx.LastActivity.IsZero() || now.Sub(ps.ctx.LastActivity) <= timeout {
 		return
 	}
 	log.Printf("[agent] sticky session expired after %s idle", now.Sub(ps.ctx.LastActivity).Round(time.Second))
-	ps.ctx.ClearSession(engine.BackendKindForModel(a.lastUsedModel))
+	ps.ctx.ClearSession(chat.BackendKindForModel(a.lastUsedModel))
 	a.lastUsedModel = ""
 }
 
-func (a *Agent) decideDirectRun(ps *projectState, userMessage string) engine.SessionRunDecision {
-	req := engine.SessionRunRequest{
+func (a *Agent) decideDirectRun(ps *projectState, userMessage string) chat.SessionRunDecision {
+	req := chat.SessionRunRequest{
 		OverrideModel:     a.currentModelOverride,
 		StickyModel:       a.activeStickyModel(ps),
 		ContinuationModel: a.activeContinuationModel(ps, userMessage),
@@ -669,7 +669,7 @@ func (a *Agent) decideDirectRun(ps *projectState, userMessage string) engine.Ses
 		req.RoutedModel, req.RoutedReason = a.selectModel(userMessage)
 		req.RoutedLatencyMS = int(time.Since(startRouting).Milliseconds())
 	}
-	return engine.DecideSessionRun(req)
+	return chat.DecideSessionRun(req)
 }
 
 func (a *Agent) selectModel(userMessage string) (string, string) {
@@ -698,7 +698,7 @@ func (a *Agent) resolveMemoryBridge(ctx context.Context, ps *projectState, userM
 		return ""
 	}
 	_, hasIssueScope := memory.ParseIssueNumber(userMessage)
-	decision := engine.DecideSessionPolicy(engine.SessionPolicyRequest{
+	decision := chat.DecideSessionPolicy(chat.SessionPolicyRequest{
 		Mode:          mode,
 		HasIssueScope: hasIssueScope,
 	})
@@ -727,7 +727,7 @@ func (a *Agent) callStreamWithResumeBridge(
 	ctx context.Context,
 	ps *projectState,
 	message string,
-	backend engine.BackendKind,
+	backend chat.BackendKind,
 	sessionID, model string,
 	onToolUse func(string, map[string]interface{}),
 	onContent func(string, string),
@@ -965,8 +965,8 @@ func formatToolUpdate(name string, input map[string]interface{}) string {
 }
 
 func processingStatusForModel(model string) string {
-	switch engine.BackendKindForModel(model) {
-	case engine.BackendCodex:
+	switch chat.BackendKindForModel(model) {
+	case chat.BackendCodex:
 		return fmt.Sprintf("GPT/Codex processing with %s...", model)
 	default:
 		return fmt.Sprintf("Claude processing with %s...", model)

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chimerakang/alice-core/engine"
+	"github.com/chimerakang/alice-core/chat"
 	"github.com/chimerakang/alice-core/hermes"
 )
 
@@ -62,7 +62,7 @@ type Request struct {
 	IssueNumber    int
 	Mode           string
 	BudgetChars    int
-	RecentMessages []engine.ContextMessage
+	RecentMessages []chat.ContextMessage
 }
 
 // Bundle is a prioritised set of context sections.
@@ -168,7 +168,7 @@ func NewWithAll(tasks HermesTaskSource, general GeneralMemorySource, static Stat
 }
 
 // NewForSessionPolicy creates a resolver respecting session policy flags.
-func NewForSessionPolicy(tasks HermesTaskSource, projectDir string, decision engine.SessionPolicyDecision) *UnifiedMemoryResolver {
+func NewForSessionPolicy(tasks HermesTaskSource, projectDir string, decision chat.SessionPolicyDecision) *UnifiedMemoryResolver {
 	var general GeneralMemorySource
 	if decision.AllowGeneralMemory {
 		general = nil // caller injects; no global here
@@ -417,7 +417,7 @@ func (ProjectStaticHintSource) ListStaticMemoryHints(ctx context.Context, req Re
 
 // BuildContextBridge produces a context summary from recent messages.
 // Used when injecting prior conversation into a new session.
-func BuildContextBridge(messages []engine.ContextMessage) string {
+func BuildContextBridge(messages []chat.ContextMessage) string {
 	if len(messages) == 0 {
 		return ""
 	}

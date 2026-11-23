@@ -1,21 +1,28 @@
 package engine
 
 import (
-	"log"
 	"strings"
 	"time"
 
-	"github.com/chimerakang/alice-core/engine/errorclass"
+	"github.com/chimerakang/alice-core/chat"
 )
 
-type RecoveryAction string
+// The error-recovery policy for a single agent run lives in the chat package.
+// This file layers the plan-execute modes (task review, sub-task retry, strict
+// review, watchdog, planner retry) on top of it.
+
+type (
+	RecoveryAction       = chat.RecoveryAction
+	RecoveryDecision     = chat.RecoveryDecision
+	RecoveryTracePayload = chat.RecoveryTracePayload
+)
 
 const (
-	RecoveryActionNone     RecoveryAction = "none"
-	RecoveryActionRetry    RecoveryAction = "retry"
-	RecoveryActionFallback RecoveryAction = "fallback"
-	RecoveryActionCancel   RecoveryAction = "cancel"
-	RecoveryActionFail     RecoveryAction = "fail"
+	RecoveryActionNone     = chat.RecoveryActionNone
+	RecoveryActionRetry    = chat.RecoveryActionRetry
+	RecoveryActionFallback = chat.RecoveryActionFallback
+	RecoveryActionCancel   = chat.RecoveryActionCancel
+	RecoveryActionFail     = chat.RecoveryActionFail
 )
 
 type RecoveryRequest struct {
@@ -29,26 +36,14 @@ type RecoveryRequest struct {
 	TaskRetry   TaskRetryConfig
 }
 
-type RecoveryDecision struct {
-	Action      RecoveryAction
-	RetryAfter  time.Duration
-	Retryable   bool
-	Terminal    bool
-	Reason      string
-	NextAttempt int
-}
-
-type RecoveryTracePayload struct {
-	Mode        string         `json:"mode"`
-	Action      RecoveryAction `json:"action"`
-	Reason      string         `json:"reason"`
-	Attempt     int            `json:"attempt"`
-	MaxAttempts int            `json:"max_attempts"`
-	NextAttempt int            `json:"next_attempt,omitempty"`
-	RetryAfter  time.Duration  `json:"retry_after,omitempty"`
-	Retryable   bool           `json:"retryable"`
-	Terminal    bool           `json:"terminal"`
-	Fallback    string         `json:"fallback,omitempty"`
+func (req RecoveryRequest) base() chat.RecoveryRequest {
+	return chat.RecoveryRequest{
+		Mode:        req.Mode,
+		Attempt:     req.Attempt,
+		MaxAttempts: req.MaxAttempts,
+		ErrorText:   req.ErrorText,
+		Fallback:    req.Fallback,
+	}
 }
 
 func DecideRecovery(req RecoveryRequest) RecoveryDecision {
@@ -65,33 +60,8 @@ func DecideRecovery(req RecoveryRequest) RecoveryDecision {
 		case "planner_retry":
 			return decidePlannerRetryRecovery(req)
 		}
-		return RecoveryDecision{Action: RecoveryActionNone, Reason: "no_error"}
 	}
-	if req.MaxAttempts < 0 {
-		req.MaxAttempts = 0
-	}
-	if isTransientRecoveryError(req.ErrorText) && req.Attempt < req.MaxAttempts {
-		nextAttempt := req.Attempt + 1
-		return RecoveryDecision{
-			Action:      RecoveryActionRetry,
-			RetryAfter:  time.Duration(nextAttempt*15) * time.Second,
-			Retryable:   true,
-			Reason:      "transient_error",
-			NextAttempt: nextAttempt,
-		}
-	}
-	if strings.TrimSpace(req.Fallback) != "" {
-		return RecoveryDecision{
-			Action:   RecoveryActionFallback,
-			Terminal: false,
-			Reason:   "fallback_available",
-		}
-	}
-	return RecoveryDecision{
-		Action:   RecoveryActionFail,
-		Terminal: true,
-		Reason:   "terminal_error",
-	}
+	return chat.DecideRecovery(req.base())
 }
 
 func RecoveryTraceEvent(req RecoveryRequest, decision RecoveryDecision, at time.Time) Event {
@@ -101,38 +71,12 @@ func RecoveryTraceEvent(req RecoveryRequest, decision RecoveryDecision, at time.
 	return Event{
 		Type:      "RecoveryDecision",
 		Timestamp: at,
-		Payload: RecoveryTracePayload{
-			Mode:        strings.TrimSpace(req.Mode),
-			Action:      decision.Action,
-			Reason:      decision.Reason,
-			Attempt:     req.Attempt,
-			MaxAttempts: req.MaxAttempts,
-			NextAttempt: decision.NextAttempt,
-			RetryAfter:  decision.RetryAfter,
-			Retryable:   decision.Retryable,
-			Terminal:    decision.Terminal,
-			Fallback:    strings.TrimSpace(req.Fallback),
-		},
+		Payload:   chat.RecoveryTrace(req.base(), decision),
 	}
 }
 
 func LogRecoveryDecision(req RecoveryRequest, decision RecoveryDecision) {
-	event := RecoveryTraceEvent(req, decision, time.Now())
-	payload, _ := event.Payload.(RecoveryTracePayload)
-	log.Printf(
-		"[recovery] event=%s mode=%s action=%s reason=%s attempt=%d max_attempts=%d next_attempt=%d retry_after=%s retryable=%t terminal=%t fallback=%q",
-		event.Type,
-		payload.Mode,
-		payload.Action,
-		payload.Reason,
-		payload.Attempt,
-		payload.MaxAttempts,
-		payload.NextAttempt,
-		payload.RetryAfter,
-		payload.Retryable,
-		payload.Terminal,
-		payload.Fallback,
-	)
+	chat.LogRecoveryDecision(req.base(), decision)
 }
 
 func decideTaskReviewRecovery(req RecoveryRequest) RecoveryDecision {
@@ -238,17 +182,5 @@ func decidePlannerRetryRecovery(req RecoveryRequest) RecoveryDecision {
 	}
 }
 
-func IsRetryableRecoveryError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return isTransientRecoveryError(err.Error())
-}
-
-// isTransientRecoveryError keeps the original boolean signature but delegates
-// classification to the canonical errorclass package. Pattern coverage is a
-// strict superset of the previous local list (verified by
-// errorclass.TestRegression_IsTransientRecoveryErrorPatterns).
-func isTransientRecoveryError(text string) bool {
-	return errorclass.ClassifyText(text).IsTransient()
-}
+// IsRetryableRecoveryError is chat.IsRetryableRecoveryError.
+func IsRetryableRecoveryError(err error) bool { return chat.IsRetryableRecoveryError(err) }

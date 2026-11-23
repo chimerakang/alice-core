@@ -1,4 +1,4 @@
-package engine
+package chat
 
 // SessionPolicy names how a model call should combine native backend session
 // state with prompt-injected memory. It is deliberately separate from
