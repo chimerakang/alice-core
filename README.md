@@ -16,6 +16,8 @@ Reusable Go library extracted from [Alice](https://github.com/chimerakang/alice)
 | `chat/` | `ChatContext` and its lifecycle, native session policy, `ExecutionLifecycle`, error recovery policy. No orchestrator dependency |
 | `errorclass/` | Classifies error text as rate limit, overload, network reset, timeout, EOF, context overflow, or killed |
 | `ghissue/` | GitHub issues via the `gh` CLI: fetch, checklist parsing and write-back, comments, labels, issue lifecycle FSM |
+| `fleet/` | Command layer for running agents across projects: project registry, task model and lifecycle state machine, append-only task event log, all in SQLite |
+| `worktree/` | Per-task git worktrees: create, attach, list, prune, and removal that refuses uncommitted work |
 | `verify/` | Acceptance checks judged by exit code: `Step` interface, shell-command steps, `go build` / `tsc` / `jq` steps, path deny-list guard |
 | `engine/` | Plan-execute FSM, recovery policy for plan-execute modes, review engine, graph walker. Re-exports `chat` types for compatibility |
 | `hermes/` | Planner/executor system, `SQLiteTaskStore`, task state machine, snapshot. Re-exports `ghissue` types for compatibility |
@@ -143,6 +145,39 @@ ctx := context.Background()
 chatCtx := engine.NewChatContext(channelID, topicID, projectDir)
 result, err := planner.Run(ctx, "實作一個 REST API，包含 CRUD 操作", chatCtx)
 ```
+
+## Fleet (multi-project task tracking)
+
+`fleet` records which repositories are under management and every task dispatched to them. One task is one agent run from start to finish; nothing is decomposed.
+
+```go
+import (
+    "github.com/chimerakang/alice-core/fleet"
+    "github.com/chimerakang/alice-core/worktree"
+)
+
+store, err := fleet.OpenStore("./data/alice.db") // or fleet.NewStore(db) to share a *sql.DB
+defer store.Close()
+
+// Register a repository. Remote and default branch are read from it.
+project, err := store.RegisterProject(ctx, fleet.Project{
+    RepoPath:       "/path/to/project",
+    TrustMode:      fleet.TrustLocalOnly, // or TrustDirectPR, TrustNoMistakes
+    VerifyCommands: []string{"go build ./...", "go test ./..."},
+})
+
+// Dispatch a task and give it an isolated checkout.
+task, err := store.CreateTask(ctx, fleet.NewTask{ProjectID: project.ID, Goal: "修好不穩定的登入測試"})
+path, _ := worktree.Layout{Root: "./data/worktrees"}.Path(project.ID, task.ID)
+branch := project.BranchName(task.ID)
+_, err = worktree.Create(ctx, project.RepoPath, path, branch, project.DefaultBranch)
+err = store.SetWorkspace(ctx, task.ID, branch, path)
+
+// Every status change is validated and written to the task's event log.
+task, err = store.Transition(ctx, task.ID, fleet.StatusRunning, "slot free")
+```
+
+Task lifecycle: `queued → running → verifying → review_ready → done`, with `needs_decision`, `failed` and `cancelled` as the exits. `fleet.CanTransition` holds the full table; an illegal change returns a `*fleet.TransitionError`.
 
 ## Git Integration
 
