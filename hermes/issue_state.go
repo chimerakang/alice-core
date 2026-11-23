@@ -1,180 +1,53 @@
 package hermes
 
-import "strings"
+import "github.com/chimerakang/alice-core/ghissue"
 
-// IssueState represents the lifecycle stage of a GitHub issue from the
-// IssueOps point of view.
-type IssueState string
+// The issue lifecycle FSM lives in the ghissue package. These aliases keep the
+// previous hermes API working for existing callers.
 
-const (
-	IssueStateDrafted           IssueState = "drafted"
-	IssueStatePlanned           IssueState = "planned"
-	IssueStateInProgress        IssueState = "in_progress"
-	IssueStateEvidenceCollected IssueState = "evidence_collected"
-	IssueStateChecklistUnsynced IssueState = "checklist_unsynced"
-	IssueStateChecklistSynced   IssueState = "checklist_synced"
-	IssueStateReadyToClose      IssueState = "ready_to_close"
-	IssueStateClosed            IssueState = "closed"
-	IssueStateBlocked           IssueState = "blocked"
+type (
+	IssueState          = ghissue.IssueState
+	IssueEvent          = ghissue.IssueEvent
+	IssueTransition     = ghissue.IssueTransition
+	IssueCloseReadiness = ghissue.IssueCloseReadiness
 )
 
-// IssueEvent represents a lifecycle event emitted by IssueOps.
-type IssueEvent string
-
 const (
-	IssueEventIssueLoaded               IssueEvent = "IssueLoaded"
-	IssueEventIssuePlanned              IssueEvent = "IssuePlanned"
-	IssueEventHermesTaskStarted         IssueEvent = "HermesTaskStarted"
-	IssueEventSubTaskCompleted          IssueEvent = "SubTaskCompleted"
-	IssueEventReviewPassed              IssueEvent = "ReviewPassed"
-	IssueEventReviewPartialOrFailed     IssueEvent = "ReviewPartialOrFailed"
-	IssueEventEvidenceAttached          IssueEvent = "EvidenceAttached"
-	IssueEventChecklistMismatchDetected IssueEvent = "ChecklistMismatchDetected"
-	IssueEventChecklistSyncRequested    IssueEvent = "ChecklistSyncRequested"
-	IssueEventChecklistSynced           IssueEvent = "ChecklistSynced"
-	IssueEventCloseRequested            IssueEvent = "CloseRequested"
-	IssueEventIssueClosed               IssueEvent = "IssueClosed"
-	IssueEventHumanDecisionRequired     IssueEvent = "HumanDecisionRequired"
-	IssueEventSyncFailed                IssueEvent = "SyncFailed"
+	IssueStateDrafted           = ghissue.IssueStateDrafted
+	IssueStatePlanned           = ghissue.IssueStatePlanned
+	IssueStateInProgress        = ghissue.IssueStateInProgress
+	IssueStateEvidenceCollected = ghissue.IssueStateEvidenceCollected
+	IssueStateChecklistUnsynced = ghissue.IssueStateChecklistUnsynced
+	IssueStateChecklistSynced   = ghissue.IssueStateChecklistSynced
+	IssueStateReadyToClose      = ghissue.IssueStateReadyToClose
+	IssueStateClosed            = ghissue.IssueStateClosed
+	IssueStateBlocked           = ghissue.IssueStateBlocked
 )
 
-// IssueTransition describes one allowed edge in the Issue FSM.
-type IssueTransition struct {
-	From  IssueState
-	Event IssueEvent
-	To    IssueState
-}
+const (
+	IssueEventIssueLoaded               = ghissue.IssueEventIssueLoaded
+	IssueEventIssuePlanned              = ghissue.IssueEventIssuePlanned
+	IssueEventHermesTaskStarted         = ghissue.IssueEventHermesTaskStarted
+	IssueEventSubTaskCompleted          = ghissue.IssueEventSubTaskCompleted
+	IssueEventReviewPassed              = ghissue.IssueEventReviewPassed
+	IssueEventReviewPartialOrFailed     = ghissue.IssueEventReviewPartialOrFailed
+	IssueEventEvidenceAttached          = ghissue.IssueEventEvidenceAttached
+	IssueEventChecklistMismatchDetected = ghissue.IssueEventChecklistMismatchDetected
+	IssueEventChecklistSyncRequested    = ghissue.IssueEventChecklistSyncRequested
+	IssueEventChecklistSynced           = ghissue.IssueEventChecklistSynced
+	IssueEventCloseRequested            = ghissue.IssueEventCloseRequested
+	IssueEventIssueClosed               = ghissue.IssueEventIssueClosed
+	IssueEventHumanDecisionRequired     = ghissue.IssueEventHumanDecisionRequired
+	IssueEventSyncFailed                = ghissue.IssueEventSyncFailed
+)
 
-var issueTransitionTable = []IssueTransition{
-	{From: "", Event: IssueEventIssueLoaded, To: IssueStateDrafted},
-	{From: IssueStateDrafted, Event: IssueEventIssuePlanned, To: IssueStatePlanned},
-	{From: IssueStateBlocked, Event: IssueEventIssuePlanned, To: IssueStatePlanned},
-	{From: IssueStatePlanned, Event: IssueEventHermesTaskStarted, To: IssueStateInProgress},
-	{From: IssueStateInProgress, Event: IssueEventSubTaskCompleted, To: IssueStateEvidenceCollected},
-	{From: IssueStateInProgress, Event: IssueEventReviewPassed, To: IssueStateEvidenceCollected},
-	{From: IssueStateInProgress, Event: IssueEventEvidenceAttached, To: IssueStateEvidenceCollected},
-	{From: IssueStateEvidenceCollected, Event: IssueEventChecklistMismatchDetected, To: IssueStateChecklistUnsynced},
-	{From: IssueStateEvidenceCollected, Event: IssueEventChecklistSyncRequested, To: IssueStateChecklistUnsynced},
-	{From: IssueStateChecklistUnsynced, Event: IssueEventChecklistSynced, To: IssueStateChecklistSynced},
-	{From: IssueStateChecklistSynced, Event: IssueEventCloseRequested, To: IssueStateReadyToClose},
-	{From: IssueStateReadyToClose, Event: IssueEventIssueClosed, To: IssueStateClosed},
-	{From: IssueStateDrafted, Event: IssueEventHumanDecisionRequired, To: IssueStateBlocked},
-	{From: IssueStatePlanned, Event: IssueEventHumanDecisionRequired, To: IssueStateBlocked},
-	{From: IssueStateInProgress, Event: IssueEventHumanDecisionRequired, To: IssueStateBlocked},
-	{From: IssueStateEvidenceCollected, Event: IssueEventHumanDecisionRequired, To: IssueStateBlocked},
-	{From: IssueStateChecklistUnsynced, Event: IssueEventHumanDecisionRequired, To: IssueStateBlocked},
-	{From: IssueStateChecklistSynced, Event: IssueEventHumanDecisionRequired, To: IssueStateBlocked},
-	{From: IssueStateReadyToClose, Event: IssueEventHumanDecisionRequired, To: IssueStateBlocked},
-	{From: IssueStateDrafted, Event: IssueEventReviewPartialOrFailed, To: IssueStateBlocked},
-	{From: IssueStatePlanned, Event: IssueEventReviewPartialOrFailed, To: IssueStateBlocked},
-	{From: IssueStateInProgress, Event: IssueEventReviewPartialOrFailed, To: IssueStateBlocked},
-	{From: IssueStateEvidenceCollected, Event: IssueEventReviewPartialOrFailed, To: IssueStateBlocked},
-	{From: IssueStateChecklistUnsynced, Event: IssueEventReviewPartialOrFailed, To: IssueStateBlocked},
-	{From: IssueStateChecklistSynced, Event: IssueEventReviewPartialOrFailed, To: IssueStateBlocked},
-	{From: IssueStateReadyToClose, Event: IssueEventReviewPartialOrFailed, To: IssueStateBlocked},
-	{From: IssueStateDrafted, Event: IssueEventSyncFailed, To: IssueStateBlocked},
-	{From: IssueStatePlanned, Event: IssueEventSyncFailed, To: IssueStateBlocked},
-	{From: IssueStateInProgress, Event: IssueEventSyncFailed, To: IssueStateBlocked},
-	{From: IssueStateEvidenceCollected, Event: IssueEventSyncFailed, To: IssueStateBlocked},
-	{From: IssueStateChecklistUnsynced, Event: IssueEventSyncFailed, To: IssueStateBlocked},
-	{From: IssueStateChecklistSynced, Event: IssueEventSyncFailed, To: IssueStateBlocked},
-	{From: IssueStateReadyToClose, Event: IssueEventSyncFailed, To: IssueStateBlocked},
-}
-
-// IsTerminal reports whether the issue has reached a final state.
-func (s IssueState) IsTerminal() bool {
-	return s == IssueStateClosed
-}
-
-// NeedsHumanDecision reports whether the current issue state requires a human
-// to unblock the workflow before IssueOps can continue.
-func (s IssueState) NeedsHumanDecision() bool {
-	return s == IssueStateBlocked
-}
-
-// CanAutoClose reports whether the issue may be closed automatically.
-//
-// The caller must still perform any higher-level GitHub write guard checks
-// before mutating remote state. This method only answers the FSM-level readiness
-// question.
-func (r IssueCloseReadiness) CanAutoClose() bool {
-	return r.State == IssueStateReadyToClose &&
-		!r.HasBlockingLabel &&
-		r.ChecklistSynced &&
-		r.ReviewAccepted &&
-		r.ValidationPassed &&
-		!r.HasUncheckedRequiredItems
-}
-
-// IssueCloseReadiness captures the guards that must pass before IssueOps may
-// auto-close an issue.
-type IssueCloseReadiness struct {
-	State                     IssueState
-	HasBlockingLabel          bool
-	ChecklistSynced           bool
-	ReviewAccepted            bool
-	ValidationPassed          bool
-	HasUncheckedRequiredItems bool
-}
-
-// ValidIssueTransition reports whether the FSM can move from `from` to `to`
-// when handling `event`.
+// ValidIssueTransition is ghissue.ValidIssueTransition.
 func ValidIssueTransition(from IssueState, event IssueEvent, to IssueState) bool {
-	for _, candidate := range issueTransitionTable {
-		if candidate.From == from && candidate.Event == event && candidate.To == to {
-			return true
-		}
-	}
-	return false
+	return ghissue.ValidIssueTransition(from, event, to)
 }
 
-// IssueStateFromGitHub normalizes a GitHub issue state or IssueOps state label
-// into the closest IssueOps lifecycle state.
-func IssueStateFromGitHub(raw string) IssueState {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "closed":
-		return IssueStateClosed
-	case "blocked":
-		return IssueStateBlocked
-	case "drafted":
-		return IssueStateDrafted
-	case "planned":
-		return IssueStatePlanned
-	case "in_progress":
-		return IssueStateInProgress
-	case "evidence_collected":
-		return IssueStateEvidenceCollected
-	case "checklist_unsynced":
-		return IssueStateChecklistUnsynced
-	case "checklist_synced":
-		return IssueStateChecklistSynced
-	case "ready_to_close":
-		return IssueStateReadyToClose
-	default:
-		return IssueStateDrafted
-	}
-}
+// IssueStateFromGitHub is ghissue.IssueStateFromGitHub.
+func IssueStateFromGitHub(raw string) IssueState { return ghissue.IssueStateFromGitHub(raw) }
 
-// IssueEventForState returns the event that best describes arriving at state.
-func IssueEventForState(state IssueState) IssueEvent {
-	switch state {
-	case IssueStateClosed:
-		return IssueEventIssueClosed
-	case IssueStateReadyToClose:
-		return IssueEventCloseRequested
-	case IssueStateChecklistSynced:
-		return IssueEventChecklistSynced
-	case IssueStateChecklistUnsynced:
-		return IssueEventChecklistMismatchDetected
-	case IssueStateBlocked:
-		return IssueEventHumanDecisionRequired
-	case IssueStateEvidenceCollected:
-		return IssueEventEvidenceAttached
-	case IssueStateInProgress:
-		return IssueEventHermesTaskStarted
-	case IssueStatePlanned:
-		return IssueEventIssuePlanned
-	default:
-		return IssueEventIssueLoaded
-	}
-}
+// IssueEventForState is ghissue.IssueEventForState.
+func IssueEventForState(state IssueState) IssueEvent { return ghissue.IssueEventForState(state) }

@@ -1,8 +1,8 @@
-package hermes
+package ghissue
 
-// GithubCfg holds GitHub integration settings for a single Coordinator instance.
-// It is populated from app.GithubIntegrationConfig in hermes_bridge.go.
-type GithubCfg struct {
+// Config holds GitHub integration settings: which lifecycle events post
+// comments, whether checklists are synced, and which labels are applied.
+type Config struct {
 	Enabled         bool
 	CommentOnStart  bool
 	CommentOnDone   bool
@@ -15,7 +15,7 @@ type GithubCfg struct {
 }
 
 // ShouldComment returns true when GitHub commenting is enabled for the given event.
-func (g *GithubCfg) ShouldComment(event string) bool {
+func (g *Config) ShouldComment(event string) bool {
 	if !g.Enabled {
 		return false
 	}

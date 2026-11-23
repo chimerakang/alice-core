@@ -1,4 +1,4 @@
-package hermes
+package ghissue
 
 import (
 	"reflect"
@@ -200,20 +200,15 @@ func TestBuildChecklistSyncPreview(t *testing.T) {
 	const body = "## 驗收條件\n- [ ] 新增 worktree 套件\n- [ ] 補上測試\n- [x] 更新 README"
 	// item IDs follow line numbers: item-1, item-2, item-3.
 
-	t.Run("no done sub-tasks changes nothing", func(t *testing.T) {
-		p := BuildChecklistSyncPreview(body, []SubTask{
-			{ID: "s1", Description: "新增 worktree 套件", Status: SubTaskPending},
-		})
+	t.Run("no completed work changes nothing", func(t *testing.T) {
+		p := BuildChecklistSyncPreview(body, nil)
 		if p.Changed || p.BodyAfter != body || p.BodyBefore != body || len(p.UpdatedChecklistItems) != 0 {
 			t.Fatalf("unexpected preview: %+v", p)
 		}
 	})
 
 	t.Run("fuzzy mode ticks by description when nothing is declared", func(t *testing.T) {
-		p := BuildChecklistSyncPreview(body, []SubTask{
-			{ID: "s1", Description: "新增 worktree 套件", Status: SubTaskDone},
-			{ID: "s2", Description: "補上測試", Status: SubTaskFailed},
-		})
+		p := BuildChecklistSyncPreview(body, []CompletedWork{{Description: "新增 worktree 套件"}})
 		want := "## 驗收條件\n- [x] 新增 worktree 套件\n- [ ] 補上測試\n- [x] 更新 README"
 		if !p.Changed || p.BodyAfter != want {
 			t.Fatalf("BodyAfter =\n%q\nwant\n%q (Changed=%v)", p.BodyAfter, want, p.Changed)
@@ -222,7 +217,7 @@ func TestBuildChecklistSyncPreview(t *testing.T) {
 			t.Errorf("UpdatedChecklistItems = %q", p.UpdatedChecklistItems)
 		}
 		if !reflect.DeepEqual(p.CompletedDescriptions, []string{"新增 worktree 套件"}) {
-			t.Errorf("CompletedDescriptions = %q, failed sub-tasks must be excluded", p.CompletedDescriptions)
+			t.Errorf("CompletedDescriptions = %q", p.CompletedDescriptions)
 		}
 		if p.BodyBefore != body {
 			t.Errorf("BodyBefore was modified")
@@ -230,9 +225,9 @@ func TestBuildChecklistSyncPreview(t *testing.T) {
 	})
 
 	t.Run("declared mode ticks by ID and ignores description overlap", func(t *testing.T) {
-		p := BuildChecklistSyncPreview(body, []SubTask{
+		p := BuildChecklistSyncPreview(body, []CompletedWork{
 			// Description matches item-1 textually, but the declaration owns item-2.
-			{ID: "s1", Description: "新增 worktree 套件", Status: SubTaskDone, ChecklistItemIDs: []string{" item-2 ", ""}},
+			{Description: "新增 worktree 套件", ChecklistItemIDs: []string{" item-2 ", ""}},
 		})
 		want := "## 驗收條件\n- [ ] 新增 worktree 套件\n- [x] 補上測試\n- [x] 更新 README"
 		if !p.Changed || p.BodyAfter != want {
@@ -243,20 +238,20 @@ func TestBuildChecklistSyncPreview(t *testing.T) {
 		}
 	})
 
-	t.Run("declared mode ignores declarations from sub-tasks that are not done", func(t *testing.T) {
-		p := BuildChecklistSyncPreview(body, []SubTask{
-			{ID: "s1", Description: "setup", Status: SubTaskDone, ChecklistItemIDs: []string{"item-1"}},
-			{ID: "s2", Description: "tests", Status: SubTaskFailed, ChecklistItemIDs: []string{"item-2"}},
+	t.Run("one declaration switches every entry to declared mode", func(t *testing.T) {
+		p := BuildChecklistSyncPreview(body, []CompletedWork{
+			{Description: "新增 worktree 套件"}, // undeclared: not ticked in declared mode
+			{Description: "tests", ChecklistItemIDs: []string{"item-2"}},
 		})
-		want := "## 驗收條件\n- [x] 新增 worktree 套件\n- [ ] 補上測試\n- [x] 更新 README"
+		want := "## 驗收條件\n- [ ] 新增 worktree 套件\n- [x] 補上測試\n- [x] 更新 README"
 		if p.BodyAfter != want {
 			t.Fatalf("BodyAfter =\n%q\nwant\n%q", p.BodyAfter, want)
 		}
 	})
 
 	t.Run("declared IDs that are unknown or already checked change nothing", func(t *testing.T) {
-		p := BuildChecklistSyncPreview(body, []SubTask{
-			{ID: "s1", Description: "x", Status: SubTaskDone, ChecklistItemIDs: []string{"item-99", "item-3"}},
+		p := BuildChecklistSyncPreview(body, []CompletedWork{
+			{Description: "x", ChecklistItemIDs: []string{"item-99", "item-3"}},
 		})
 		if p.Changed || p.BodyAfter != body {
 			t.Fatalf("unexpected change: %+v", p)
