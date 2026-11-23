@@ -238,6 +238,12 @@ func TestLogHelpers(t *testing.T) {
 	if got := logName("git", []string{"status", "--short"}); got != "git status --short" {
 		t.Errorf("logName = %q", got)
 	}
+	if got := logLabel("", "git", []string{"status"}); got != "git status" {
+		t.Errorf("logLabel without a label = %q", got)
+	}
+	if got := logLabel("claude (task 3f9a)", "claude", []string{"-p", "a very long prompt"}); got != "claude (task 3f9a)" {
+		t.Errorf("logLabel must replace the command line, got %q", got)
+	}
 	if got := correlationID("fixed"); got != "fixed" {
 		t.Errorf("correlationID = %q", got)
 	}
