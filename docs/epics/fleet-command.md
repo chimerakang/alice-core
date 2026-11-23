@@ -214,7 +214,7 @@ Alice 目前以 `hermes` 把一個目標拆成子任務再逐一執行與審查�
 
 目標：在手機上完成派工、掌握狀況、做決策。不在 TG 內呈現長篇 log 或完整 diff，改以連結導向網頁。所有新文字走 `locales/` 的 i18n，新的 callback 一律使用 `fleet:` 前綴。
 
-### D-1 既有 topic 綁定接上 fleet 專案登記（M）
+### D-1 既有 topic 綁定接上 fleet 專案登記（M） alice#184
 topic 對專案路徑的綁定已由 `/project` 與 `topic_settings` 表提供，這裡只做對接，不重做綁定。
 - [ ] `/project <路徑>` 成功時，若該路徑尚未登記為 fleet 專案則自動登記
 - [ ] 啟動時把 `topic_settings` 既有的路徑回填為 fleet 專案，重複執行不產生重複資料
@@ -223,7 +223,7 @@ topic 對專案路徑的綁定已由 `/project` 與 `topic_settings` 表提供�
 - [ ] 未綁定專案的 topic 收到派工指令時提示先執行 `/project`
 - [ ] 依賴：B-1、C-1、F-5
 
-### D-2 派工指令（M）
+### D-2 派工指令（M） alice#185
 一般文字訊息維持與 agent 直接對話，不自動派工。
 - [ ] `/ship <目標>` 派發 ship 任務到本 topic 的專案
 - [ ] `/scout <問題>` 派發調查任務
@@ -233,7 +233,7 @@ topic 對專案路徑的綁定已由 `/project` 與 `topic_settings` 表提供�
 - [ ] 指令解析有表格式測試
 - [ ] 依賴：D-1、B-11
 
-### D-3 任務卡片（M）
+### D-3 任務卡片（M） alice#186
 - [ ] 每個任務一則訊息，狀態變更時原地編輯，不洗版
 - [ ] 顯示：狀態、已執行時間、目前動作的一行摘要、成本
 - [ ] 按鈕依狀態變化：取消、重試、看詳情（開網頁）、核准、合併、捨棄
@@ -242,7 +242,7 @@ topic 對專案路徑的綁定已由 `/project` 與 `topic_settings` 表提供�
 - [ ] bot 重啟後仍能更新重啟前送出的卡片（訊息 ID 需持久化）
 - [ ] 依賴：C-2、F-5
 
-### D-4 決策提示（M）
+### D-4 決策提示（M） alice#187
 沿用既有 `hermes:fail:`、`hermes:budget:` 提示的互動樣式。
 - [ ] agent 提問、驗收用盡重試、超出預算、任務卡住、程序死亡時發出提示
 - [ ] 常見選項以按鈕呈現：重試、帶提示重試、放行、捨棄
@@ -250,27 +250,27 @@ topic 對專案路徑的綁定已由 `/project` 與 `topic_settings` 表提供�
 - [ ] 同一任務同一原因不重複提示
 - [ ] 依賴：D-3
 
-### D-5 艦隊總覽指令（S）
+### D-5 艦隊總覽指令（S） alice#188
 - [ ] `/fleet`：跨專案摘要，列出各專案執行中、待審、待決策、失敗的數量與今日成本
 - [ ] `/fleet tasks`：本 topic 專案的任務清單，可點選開啟卡片
 - [ ] `/status` 與 `/menu` 加入 fleet 的狀態與入口
 - [ ] 既有的 `/tasks`（讀取 GitHub issues）維持不變
 - [ ] 依賴：C-4
 
-### D-6 通知模式（S）
+### D-6 通知模式（S） alice#189
 - [ ] `/quiet`：只收需要決策的通知
 - [ ] `/afk <時長> [授權範圍]`：在授權範圍內自動處理，到期自動恢復
 - [ ] `/back`：恢復一般模式，並回傳離開期間的摘要
 - [ ] 模式在 bot 重啟後保留
 - [ ] 依賴：C-3
 
-### D-7 交付結果訊息（S）
+### D-7 交付結果訊息（S） alice#190
 - [ ] 完成時送出：變更檔案數、增刪行數、驗收結果、PR 連結
 - [ ] `no-mistakes` 模式附上單一「核准並合併」按鈕，僅擁有者可按
 - [ ] scout 任務送出報告摘要，並以檔案附上 `report.md`
 - [ ] 依賴：D-3、B-8
 
-### D-8 既有指令的相容對應（M）
+### D-8 既有指令的相容對應（M） alice#191
 切換後舊指令不可失效。
 - [ ] `/hermes`、`/ghermes` 在 fleet 模式下等同 `/ship`，並提示新指令名稱
 - [ ] `/abort`、`/retry`、`/resume`、`/close` 對應到 fleet 的取消、重試、接續、捨棄
@@ -285,7 +285,7 @@ topic 對專案路徑的綁定已由 `/project` 與 `topic_settings` 表提供�
 
 目標：完整的艦隊管控介面，涵蓋 TG 放不下的所有內容。前端變更後需依既有流程重建並複製到 `web/`。
 
-### E-1 Fleet 的 HTTP 與 WebSocket 轉接層（M）
+### E-1 Fleet 的 HTTP 與 WebSocket 轉接層（M） alice#192
 - [ ] 在 `proto/` 定義 fleet 的專案、任務、事件、驗收結果型別，產生 `gen/` 與前端型別
 - [ ] 在既有 `WebInterface` 下新增 `/api/fleet/*`：專案、任務、事件、diff、摘要的查詢端點
 - [ ] 指令端點（派工、取消、重試、回覆、核准、合併、捨棄）沿用既有的 Bearer `apiToken` 檢查
@@ -294,7 +294,7 @@ topic 對專案路徑的綁定已由 `/project` 與 `topic_settings` 表提供�
 - [ ] 每個端點有 handler 測試
 - [ ] 依賴：C-1、C-2、F-5
 
-### E-2 艦隊看板（L）
+### E-2 艦隊看板（L） alice#193
 - [ ] 新增 `/fleet` 頁並放在導覽第一位，`/issues-runs` 保留
 - [ ] 以狀態分欄的看板，橫跨所有專案，可依專案篩選
 - [ ] 卡片即時更新，存活狀態以顏色區分，`unknown` 有獨立樣式
@@ -302,7 +302,7 @@ topic 對專案路徑的綁定已由 `/project` 與 `topic_settings` 表提供�
 - [ ] 手機寬度下可用
 - [ ] 依賴：E-1
 
-### E-3 任務詳情頁（L）
+### E-3 任務詳情頁（L） alice#194
 - [ ] 即時串流的事件時間軸，重用 `TimelineEntry` 與 `ToolCallGantt`
 - [ ] Diff 檢視重用 `DiffViewer`，資料來源為任務 worktree 對基準分支的差異
 - [ ] 驗收結果：每個指令的輸出與結束碼
@@ -310,32 +310,32 @@ topic 對專案路徑的綁定已由 `/project` 與 `topic_settings` 表提供�
 - [ ] 可由 TG 卡片的「看詳情」連結直接開啟
 - [ ] 依賴：E-1
 
-### E-4 派工編輯器（M）
+### E-4 派工編輯器（M） alice#195
 - [ ] 選擇專案、shape、模型、預算上限
 - [ ] 批次派工：一次輸入多個任務
 - [ ] 從 GitHub issue 清單勾選派工
 - [ ] 依賴：E-1、B-11
 
-### E-5 決策收件匣（M）
+### E-5 決策收件匣（M） alice#196
 - [ ] 集中列出所有 `needs_decision` 與 `review_ready` 的任務
 - [ ] 每一項附上情境與可選動作，不必進入詳情頁即可處理
 - [ ] 導覽列顯示待處理數量
 - [ ] 依賴：E-1
 
-### E-6 專案管理頁（M）
+### E-6 專案管理頁（M） alice#197
 - [ ] 登記與編輯專案：路徑、信任模式、驗收指令、並行上限
 - [ ] 驗收指令可試跑並顯示結果
 - [ ] 顯示該專案的 worktree 清單，標示髒的與孤兒的
 - [ ] 顯示該專案綁定的 TG topic
 - [ ] 依賴：E-1
 
-### E-7 成本與用量擴充（M）
+### E-7 成本與用量擴充（M） alice#198
 擴充既有的 Performance 頁與 `/api/costs/*`，不另建新頁。
 - [ ] 成本可依專案與任務分組
 - [ ] 顯示預算使用率與超限紀錄
 - [ ] 依賴：E-1、B-10
 
-### E-8 稽核紀錄擴充（S）
+### E-8 稽核紀錄擴充（S） alice#199
 擴充既有的 Security 頁稽核區塊。
 - [ ] 記錄 fleet 指令的操作者、時間、來源（TG 或網頁）、結果
 - [ ] 可依專案與任務篩選
@@ -347,14 +347,14 @@ topic 對專案路徑的綁定已由 `/project` 與 `topic_settings` 表提供�
 
 alice 端的項目為 F-1、F-4、F-5、F-6；alice-core 端為 F-2、F-3。
 
-### F-4 統一開發基準分支（alice，S）
+### F-4 統一開發基準分支（alice，S） alice#182
 `exp/hermes-vscode-hook` 與 `main` 已分岔，fleet 的工作需要單一基準。
 - [ ] 決定基準分支（建議以 `exp/hermes-vscode-hook` 為準）
 - [ ] 把另一條線獨有的提交併入：`main` 上的 Telegram 請求逾時、輪詢復原、`/wake` 指令
 - [ ] 併入後 `go build ./...` 與 `go test ./...` 通過
 - [ ] 預設分支指向統一後的結果
 
-### F-5 引用 alice-core 並接上 fleet（alice，M）
+### F-5 引用 alice-core 並接上 fleet（alice，M） alice#183
 - [ ] `go.mod` 加入 `github.com/chimerakang/alice-core`
 - [ ] 啟動時建立 fleet 實例，與既有 SQLite 資料庫及單一實例鎖共用
 - [ ] fleet 的事件轉送到既有的 WebSocket hub 與 runtime events
@@ -362,14 +362,14 @@ alice 端的項目為 F-1、F-4、F-5、F-6；alice-core 端為 F-2、F-3。
 - [ ] fleet 未啟用時行為與現在完全相同
 - [ ] 依賴：F-4、B-4、C-1
 
-### F-1 Alice 改走 fleet（alice，L）
+### F-1 Alice 改走 fleet（alice，L） alice#200
 - [ ] 以設定開關在 hermes 與 fleet 之間切換，預設仍為 hermes
 - [ ] 在至少兩個真實專案上以 fleet 完成十個任務並記錄結果
 - [ ] 預設值切到 fleet
 - [ ] 關閉或改寫以 hermes 為前提的既有 issue：#177、#173、#172、#158、#115
 - [ ] 依賴：F-5、D-2、D-3、D-4、D-7、D-8
 
-### F-6 移除 alice 內的舊協調程式碼與頁面（alice，M）
+### F-6 移除 alice 內的舊協調程式碼與頁面（alice，M） alice#201
 - [ ] 刪除 `internal/app/hermes/`、`internal/app/engine/`、`internal/app/task/` 及其 bridge 檔案
 - [ ] 刪除 `multiagent.go` 的 `AgentCoordinator` 與 `SubAgentOrchestrator`
 - [ ] `internal/app/issueops/`、`internal/app/process/` 改用 alice-core 的版本
