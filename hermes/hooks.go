@@ -6,9 +6,9 @@ package hermes
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
-	"time"
+
+	"github.com/chimerakang/alice-core/verify"
 )
 
 // PreHook runs before a tool executes. Return an error to block execution.
@@ -69,24 +69,11 @@ func factError(format string, args ...any) error {
 
 // ─── PathGuard ────────────────────────────────────────────────────────────────
 
-// defaultDenyPatterns are path patterns that PathGuard blocks writes to.
-var defaultDenyPatterns = []string{
-	"config.json",
-	".git/",
-	".git",
-	".env",
-	".env.local",
-	".env.production",
-	"*.pem",
-	"*.key",
-	"id_rsa",
-	"id_ed25519",
-}
-
 // PathGuard returns a PreHook that blocks write operations to protected paths.
 // It checks the "path" and "file_path" arguments used by Edit, Write, and Bash tools.
+// The matching rules and default deny list live in verify.PathGuard.
 func PathGuard(extraDenyPatterns ...string) PreHook {
-	deny := append(defaultDenyPatterns, extraDenyPatterns...)
+	guard := verify.NewPathGuard(extraDenyPatterns...)
 	writeTools := map[string]bool{
 		"Edit":  true,
 		"Write": true,
@@ -108,53 +95,18 @@ func PathGuard(extraDenyPatterns ...string) PreHook {
 			}
 		}
 
-		for _, candidate := range candidates {
-			if blocked, pattern := matchesDenyList(candidate, deny); blocked {
-				return factError("path %q matches denylist pattern %q", candidate, pattern)
-			}
+		if candidate, pattern, blocked := guard.CheckAll(candidates...); blocked {
+			return factError("path %q matches denylist pattern %q", candidate, pattern)
 		}
 		return nil
 	}
 }
 
-// matchesDenyList returns true if path matches any deny pattern.
-func matchesDenyList(path string, patterns []string) (bool, string) {
-	clean := filepath.Clean(path)
-	base := filepath.Base(clean)
+// ─── Post-write validators ────────────────────────────────────────────────────
+//
+// Each validator is a verify step that runs only after a matching file write.
 
-	for _, pattern := range patterns {
-		// Exact base name match
-		if base == pattern {
-			return true, pattern
-		}
-		// Directory pattern (e.g. ".git/"): match as a path component, not a prefix
-		if strings.HasSuffix(pattern, "/") {
-			dir := strings.TrimSuffix(pattern, "/")
-			if clean == dir ||
-				strings.HasPrefix(clean, dir+"/") ||
-				strings.Contains(clean, "/"+dir+"/") ||
-				strings.HasSuffix(clean, "/"+dir) {
-				return true, pattern
-			}
-			continue
-		}
-		// Glob match on base name
-		if matched, _ := filepath.Match(pattern, base); matched {
-			return true, pattern
-		}
-		// Exact full path match
-		if clean == pattern {
-			return true, pattern
-		}
-	}
-	return false, ""
-}
-
-// ─── GoBuild validator ────────────────────────────────────────────────────────
-
-const goBuildMaxOutputLines = 50
-const goBuildTimeout = 2 * time.Minute
-const validatorOutputLimit = 256 * 1024
+const validatorMaxOutputLines = 50
 
 // GoBuild returns a PostHook that runs "go build ./..." after any .go file is written.
 // workDir is the module root to run the build from.
@@ -163,15 +115,8 @@ func GoBuild(workDir string) PostHook {
 		if !isGoFileWrite(tool, args) {
 			return nil
 		}
-
-		out, err := runProcessCombinedOutput(ctx, ProcessOptions{
-			Dir:         workDir,
-			Timeout:     goBuildTimeout,
-			OutputLimit: validatorOutputLimit,
-		}, "go", "build", "./...")
-		if err != nil {
-			output := trimLines(string(out), goBuildMaxOutputLines)
-			return factError("go build ./... failed: %s", output)
+		if res := verify.GoBuild().Run(ctx, workDir); !res.Passed {
+			return factError("go build ./... failed: %s", validatorOutput(res))
 		}
 		return nil
 	}
@@ -179,22 +124,8 @@ func GoBuild(workDir string) PostHook {
 
 // isGoFileWrite returns true when the tool is writing a .go file.
 func isGoFileWrite(tool string, args map[string]any) bool {
-	if tool != "Edit" && tool != "Write" {
-		return false
-	}
-	for _, key := range []string{"path", "file_path"} {
-		if v, ok := args[key]; ok {
-			if s, ok := v.(string); ok && strings.HasSuffix(s, ".go") {
-				return true
-			}
-		}
-	}
-	return false
+	return isFileWrite(tool) && anyPathHasSuffix(args, ".go")
 }
-
-// ─── TscCheck validator ───────────────────────────────────────────────────────
-
-const tscTimeout = 3 * time.Minute
 
 // TscCheck returns a PostHook that runs "tsc --noEmit" after any .ts/.tsx file is written.
 // workDir is the directory containing tsconfig.json.
@@ -203,15 +134,8 @@ func TscCheck(workDir string) PostHook {
 		if !isTsFileWrite(tool, args) {
 			return nil
 		}
-
-		out, err := runProcessCombinedOutput(ctx, ProcessOptions{
-			Dir:         workDir,
-			Timeout:     tscTimeout,
-			OutputLimit: validatorOutputLimit,
-		}, "tsc", "--noEmit")
-		if err != nil {
-			output := trimLines(string(out), goBuildMaxOutputLines)
-			return factError("tsc --noEmit failed: %s", output)
+		if res := verify.TscCheck().Run(ctx, workDir); !res.Passed {
+			return factError("tsc --noEmit failed: %s", validatorOutput(res))
 		}
 		return nil
 	}
@@ -219,24 +143,8 @@ func TscCheck(workDir string) PostHook {
 
 // isTsFileWrite returns true when the tool is writing a .ts or .tsx file.
 func isTsFileWrite(tool string, args map[string]any) bool {
-	if tool != "Edit" && tool != "Write" {
-		return false
-	}
-	for _, key := range []string{"path", "file_path"} {
-		if v, ok := args[key]; ok {
-			if s, ok := v.(string); ok {
-				if strings.HasSuffix(s, ".ts") || strings.HasSuffix(s, ".tsx") {
-					return true
-				}
-			}
-		}
-	}
-	return false
+	return isFileWrite(tool) && anyPathHasSuffix(args, ".ts", ".tsx")
 }
-
-// ─── JsonLint validator ───────────────────────────────────────────────────────
-
-const jsonLintTimeout = 30 * time.Second
 
 // JsonLint returns a PostHook that runs "jq empty" after any .json file is written.
 func JsonLint(workDir string) PostHook {
@@ -244,19 +152,9 @@ func JsonLint(workDir string) PostHook {
 		if !isJsonFileWrite(tool, args) {
 			return nil
 		}
-
 		path := extractFilePath(args)
-		if path == "" {
-			return nil
-		}
-
-		out, err := runProcessCombinedOutput(ctx, ProcessOptions{
-			Dir:         workDir,
-			Timeout:     jsonLintTimeout,
-			OutputLimit: validatorOutputLimit,
-		}, "jq", "empty", path)
-		if err != nil {
-			return factError("jq empty %s failed: %s", path, strings.TrimSpace(string(out)))
+		if res := verify.JSONLint(path).Run(ctx, workDir); !res.Passed {
+			return factError("jq empty %s failed: %s", path, strings.TrimSpace(validatorOutput(res)))
 		}
 		return nil
 	}
@@ -264,13 +162,36 @@ func JsonLint(workDir string) PostHook {
 
 // isJsonFileWrite returns true when the tool is writing a .json file.
 func isJsonFileWrite(tool string, args map[string]any) bool {
-	if tool != "Edit" && tool != "Write" {
-		return false
-	}
-	return strings.HasSuffix(extractFilePath(args), ".json")
+	return isFileWrite(tool) && strings.HasSuffix(extractFilePath(args), ".json")
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
+
+func isFileWrite(tool string) bool {
+	return tool == "Edit" || tool == "Write"
+}
+
+// anyPathHasSuffix reports whether any path argument ends in one of suffixes.
+func anyPathHasSuffix(args map[string]any, suffixes ...string) bool {
+	for _, key := range []string{"path", "file_path"} {
+		s, _ := args[key].(string)
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(s, suffix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// validatorOutput returns what to show for a failed validator: its output,
+// trimmed to a readable length, or the reason it produced none.
+func validatorOutput(res verify.Result) string {
+	if strings.TrimSpace(res.Output) == "" && res.Err != "" {
+		return res.Err
+	}
+	return verify.TrimLines(res.Output, validatorMaxOutputLines)
+}
 
 // extractFilePath returns the first non-empty path argument from known keys.
 func extractFilePath(args map[string]any) string {
@@ -282,17 +203,6 @@ func extractFilePath(args map[string]any) string {
 		}
 	}
 	return ""
-}
-
-// trimLines returns at most n lines of s, with a trailing note if truncated.
-func trimLines(s string, n int) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	if len(lines) <= n {
-		return s
-	}
-	truncated := lines[:n]
-	truncated = append(truncated, fmt.Sprintf("... (%d more lines omitted)", len(lines)-n))
-	return strings.Join(truncated, "\n")
 }
 
 // ─── Builder ──────────────────────────────────────────────────────────────────
