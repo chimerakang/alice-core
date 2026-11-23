@@ -57,7 +57,7 @@ var wantTransitions = map[Status][]Status{
 	StatusQueued:        {StatusRunning, StatusCancelled},
 	StatusRunning:       {StatusVerifying, StatusNeedsDecision, StatusFailed, StatusCancelled},
 	StatusVerifying:     {StatusReviewReady, StatusDone, StatusRunning, StatusNeedsDecision, StatusFailed, StatusCancelled},
-	StatusReviewReady:   {StatusDone, StatusRunning, StatusCancelled},
+	StatusReviewReady:   {StatusDone, StatusRunning, StatusNeedsDecision, StatusCancelled},
 	StatusNeedsDecision: {StatusRunning, StatusQueued, StatusReviewReady, StatusFailed, StatusCancelled},
 	StatusFailed:        {StatusQueued},
 	StatusDone:          nil,

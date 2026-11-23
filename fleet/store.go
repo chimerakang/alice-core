@@ -173,6 +173,8 @@ var schema = []string{
 // TABLE IF NOT EXISTS leaves an existing table alone, so they are added here.
 var addedColumns = []struct{ table, column, definition string }{
 	{"fleet_tasks", "liveness", "TEXT NOT NULL DEFAULT 'unknown'"},
+	{"fleet_tasks", "pr_url", "TEXT NOT NULL DEFAULT ''"},
+	{"fleet_tasks", "pr_number", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 func (s *Store) migrate() error {

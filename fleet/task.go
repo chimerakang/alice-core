@@ -102,8 +102,9 @@ var transitions = map[Status][]Status{
 	// and go back to the agent (running), exhaust their retries
 	// (needs_decision), or cannot run at all (failed).
 	StatusVerifying: {StatusReviewReady, StatusDone, StatusRunning, StatusNeedsDecision, StatusFailed, StatusCancelled},
-	// The owner accepts, sends it back with more instructions, or discards it.
-	StatusReviewReady: {StatusDone, StatusRunning, StatusCancelled},
+	// The owner accepts, sends it back with more instructions, or discards
+	// it; or delivering the result fails and the owner has to step in.
+	StatusReviewReady: {StatusDone, StatusRunning, StatusNeedsDecision, StatusCancelled},
 	// The owner answers (running), restarts it (queued), waves it through
 	// (review_ready), gives up (failed) or discards it (cancelled).
 	StatusNeedsDecision: {StatusRunning, StatusQueued, StatusReviewReady, StatusFailed, StatusCancelled},
@@ -205,6 +206,10 @@ type Task struct {
 	WorktreePath string
 	// SessionID is the agent's native session, used to resume it.
 	SessionID string
+	// PRURL and PRNumber identify the pull request opened for the task, in
+	// the trust modes that open one.
+	PRURL    string
+	PRNumber int
 
 	InputTokens  int64
 	OutputTokens int64

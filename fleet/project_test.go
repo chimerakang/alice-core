@@ -547,3 +547,16 @@ func TestOpenStore_Errors(t *testing.T) {
 		t.Error("an unreachable path must be rejected")
 	}
 }
+
+// gitCmd builds a git command without failing the test, for checks whose
+// exit status is the answer.
+func gitCmd(dir string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	return cmd
+}
+
+func gitOut(dir string, args ...string) (string, error) {
+	out, err := gitCmd(dir, args...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
