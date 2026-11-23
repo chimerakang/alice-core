@@ -113,6 +113,10 @@ type RunOptions struct {
 	// IgnoreBudget lets this one run start even though a budget limit has
 	// been reached. It is the owner's explicit override.
 	IgnoreBudget bool
+	// OnStart, when set, is called once the agent process is running, with
+	// the task as it stands then (workspace assigned). It must return
+	// promptly: the agent's output is not read until it does.
+	OnStart func(Task)
 }
 
 // RunResult describes a finished run.
@@ -311,6 +315,10 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	_, _ = r.Store.AppendEvent(ctx, task.ID, EventRunStarted, map[string]any{
 		"dir": dir, "resumed": sessionID != "", "pid": cmd.Process.Pid,
 	})
+
+	if opts.OnStart != nil {
+		opts.OnStart(*task)
+	}
 
 	stream := r.consume(ctx, task, stdout)
 	waitErr := cmd.Wait()

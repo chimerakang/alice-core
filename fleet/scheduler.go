@@ -26,6 +26,10 @@ type Scheduler struct {
 	// trust mode allows: committing, pushing, opening a pull request. When
 	// nil, verified tasks simply wait at review_ready.
 	Deliverer *Deliverer
+	// Issues, when set, keeps the GitHub issue behind an issue-driven task
+	// informed: a comment when work starts and when it ends, and checklist
+	// items ticked once the work is verified.
+	Issues *IssueTracker
 	// MaxConcurrent caps active tasks across all projects. Zero means
 	// DefaultSchedulerConcurrency. Each project's own MaxConcurrent applies
 	// on top of it.
@@ -227,8 +231,32 @@ func (s *Scheduler) Tick(ctx context.Context) ([]string, error) {
 // a task that is waiting on the owner through the same run-and-verify cycle,
 // for example with an answer or further instructions in opts.
 func (s *Scheduler) RunTask(ctx context.Context, taskID string, opts RunOptions) (RunResult, error) {
+	before, lookupErr := s.Store.GetTask(ctx, taskID)
+	tracked := lookupErr == nil && s.Issues.isTracked(before)
+	if tracked && before.Status == StatusQueued && opts.OnStart == nil {
+		opts.OnStart = func(t Task) { s.Issues.Started(ctx, t) }
+	}
+	note := func(res RunResult) {
+		if tracked {
+			s.Issues.NoteResult(ctx, res.Task, res.Text)
+		}
+	}
+
+	res, err := s.cycle(ctx, taskID, opts, note)
+	if err == nil && tracked {
+		s.Issues.Finished(ctx, res.Task)
+	}
+	return res, err
+}
+
+// cycle is the run, verify, retry, deliver sequence. afterRun sees the
+// result of every agent run in it.
+func (s *Scheduler) cycle(ctx context.Context, taskID string, opts RunOptions, afterRun func(RunResult)) (RunResult, error) {
 	verifier := s.verifier()
 	res, err := s.Runner.Run(ctx, taskID, opts)
+	if err == nil {
+		afterRun(res)
+	}
 	for err == nil && res.Outcome == OutcomeFinished {
 		check, verr := verifier.Verify(ctx, taskID)
 		if verr != nil {
@@ -244,6 +272,9 @@ func (s *Scheduler) RunTask(ctx context.Context, taskID string, opts RunOptions)
 			// The budget ran out between the check and the retry. The task
 			// must not be left verifying with nothing coming to check it.
 			return s.stopForBudget(ctx, taskID, res, over)
+		}
+		if err == nil {
+			afterRun(res)
 		}
 	}
 	if err == nil && s.Deliverer != nil && res.Task.Shape == ShapeShip && res.Task.Status == StatusReviewReady {
