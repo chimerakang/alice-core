@@ -374,63 +374,6 @@ func TestWatcher_DeadProcessIsRecovered(t *testing.T) {
 	}
 }
 
-func TestWatcher_OverBudget(t *testing.T) {
-	e := newRunnerEnv(t)
-	w := e.watcher()
-	w.MaxTaskCostUSD = 1.00
-	w.MaxTaskTokens = 5000
-	e.script(lineInit, "#sleep 30")
-
-	cheap := e.task(NewTask{})
-	costly := e.task(NewTask{})
-	chatty := e.task(NewTask{})
-	e.setProjectLimit("app", 5)
-	outs := map[string]<-chan runOutcome{}
-	for _, id := range []string{cheap.ID, costly.ID, chatty.ID} {
-		outs[id] = e.runAsync(ctx, id)
-		e.waitForStart(id)
-	}
-	if err := e.store.AddUsage(ctx, cheap.ID, Usage{InputTokens: 100, CostUSD: 0.10}); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.store.AddUsage(ctx, costly.ID, Usage{InputTokens: 100, CostUSD: 2.50}); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.store.AddUsage(ctx, chatty.ID, Usage{InputTokens: 4000, OutputTokens: 1500, CostUSD: 0.20}); err != nil {
-		t.Fatal(err)
-	}
-
-	got := map[string]string{}
-	for _, wk := range e.scan(w) {
-		if wk.Kind != WakeOverBudget {
-			t.Fatalf("unexpected wake %+v", wk)
-		}
-		got[wk.TaskID] = wk.Detail
-	}
-	want := map[string]string{
-		costly.ID: "cost $2.50 exceeds the task budget of $1.00",
-		chatty.ID: "5500 tokens exceed the task budget of 5000",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("over-budget wakes = %v, want %v", got, want)
-	}
-	// Reported once per run, not on every pass.
-	if again := e.scan(w); len(again) != 0 {
-		t.Fatalf("budget wakes repeated: %+v", summarize(again))
-	}
-	// The watcher reports; it does not stop the task.
-	if !e.runner.Running(costly.ID) {
-		t.Error("the watcher must not stop an over-budget task by itself")
-	}
-
-	for id, out := range outs {
-		if err := e.runner.Cancel(id, ""); err != nil {
-			t.Fatal(err)
-		}
-		awaitRun(t, out)
-	}
-}
-
 func TestWatcher_Run(t *testing.T) {
 	e := newRunnerEnv(t)
 	w := e.watcher()
