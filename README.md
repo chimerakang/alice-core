@@ -207,6 +207,8 @@ sched.Kick() // look at the queue now instead of at the next poll
 
 After the agent finishes, `fleet.Verifier` runs the project's `VerifyCommands` in the task's worktree and judges by exit code alone. A failure is sent back to the same agent session with the failing command and its output, up to `MaxRetries` times, then the task becomes `needs_decision`. A scout is checked for a non-empty report and an untouched checkout. Every check is stored in `fleet_verifications`.
 
+`Scheduler.Run` begins with `Runner.Recover`, which reconciles stored state with reality after a crash or restart: a task stored as running with no process behind it is marked dead and moved to `needs_decision` with its session intact, an agent process that outlived the host is stopped, and checkouts that no unfinished task owns are reported (never deleted). Set `Scheduler.OnRecovery` to receive the report.
+
 Task lifecycle: `queued → running → verifying → review_ready → done`, with `needs_decision`, `failed` and `cancelled` as the exits. `fleet.CanTransition` holds the full table; an illegal change returns a `*fleet.TransitionError`.
 
 ## Git Integration

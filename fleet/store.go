@@ -152,13 +152,49 @@ var schema = []string{
 		BEGIN SELECT RAISE(ABORT, 'fleet_task_events is append-only'); END`,
 }
 
+// addedColumns are columns introduced after a table first shipped. CREATE
+// TABLE IF NOT EXISTS leaves an existing table alone, so they are added here.
+var addedColumns = []struct{ table, column, definition string }{
+	{"fleet_tasks", "liveness", "TEXT NOT NULL DEFAULT 'unknown'"},
+}
+
 func (s *Store) migrate() error {
 	for _, stmt := range schema {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("fleet: prepare schema: %w", err)
 		}
 	}
+	for _, c := range addedColumns {
+		has, err := s.hasColumn(c.table, c.column)
+		if err != nil {
+			return fmt.Errorf("fleet: inspect %s: %w", c.table, err)
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.Exec("ALTER TABLE " + c.table + " ADD COLUMN " + c.column + " " + c.definition); err != nil {
+			return fmt.Errorf("fleet: add %s.%s: %w", c.table, c.column, err)
+		}
+	}
 	return nil
+}
+
+func (s *Store) hasColumn(table, column string) (bool, error) {
+	rows, err := s.db.Query("SELECT name FROM pragma_table_info(?)", table)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // inTx runs fn in a write transaction, committing when it returns nil.

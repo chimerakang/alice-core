@@ -60,6 +60,31 @@ const (
 	StatusCancelled Status = "cancelled"
 )
 
+// Liveness is what is known about a task's agent process, separately from
+// the task's status. A missing or stale signal reads as unknown, never as
+// idle: "we do not know" must not be mistaken for "it has stopped".
+type Liveness string
+
+const (
+	// LivenessUnknown: nothing is known. The default.
+	LivenessUnknown Liveness = "unknown"
+	// LivenessBusy: an agent process is running for the task.
+	LivenessBusy Liveness = "busy"
+	// LivenessIdle: the task's last run ended normally and nothing is running.
+	LivenessIdle Liveness = "idle"
+	// LivenessDead: the task should have a process and does not.
+	LivenessDead Liveness = "dead"
+)
+
+// Valid reports whether l is a known liveness.
+func (l Liveness) Valid() bool {
+	switch l {
+	case LivenessUnknown, LivenessBusy, LivenessIdle, LivenessDead:
+		return true
+	}
+	return false
+}
+
 // AllStatuses lists every status, in lifecycle order.
 var AllStatuses = []Status{
 	StatusQueued, StatusRunning, StatusVerifying, StatusReviewReady,
@@ -171,6 +196,8 @@ type Task struct {
 	Status Status
 	// StatusReason says why the task is in its current status.
 	StatusReason string
+	// Liveness is what is known about the task's agent process.
+	Liveness Liveness
 
 	// Branch and WorktreePath locate the task's isolated checkout, once one
 	// has been created.

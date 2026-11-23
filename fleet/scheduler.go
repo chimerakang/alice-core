@@ -29,6 +29,10 @@ type Scheduler struct {
 	// PollInterval is how often the queue is re-examined when nothing wakes
 	// the scheduler sooner. Zero means DefaultPollInterval.
 	PollInterval time.Duration
+	// OnRecovery, when set, receives what startup recovery found. Run calls
+	// it once, before the first scheduling pass, when there is anything to
+	// report.
+	OnRecovery func(RecoveryReport)
 
 	mu       sync.Mutex
 	inflight map[string]inflightTask // tasks this scheduler started and has not finished
@@ -48,13 +52,27 @@ type inflightTask struct {
 	branch    string
 }
 
-// Run schedules until ctx is cancelled, then waits for the tasks it started
-// to wind down. Cancelling ctx stops their agents; each such task is left
+// Run first recovers tasks cut off by an earlier crash or restart (see
+// Runner.Recover), then schedules until ctx is cancelled, then waits for the
+// tasks it started to wind down. Cancelling ctx stops their agents; each such task is left
 // needing a decision with its session intact.
 func (s *Scheduler) Run(ctx context.Context) error {
 	if s.Store == nil || s.Runner == nil {
 		return errors.New("fleet: Scheduler needs a Store and a Runner")
 	}
+	// Tasks left active by a previous process would hold their slots for
+	// ever, so they are reconciled before anything is scheduled.
+	report, err := s.Runner.Recover(ctx)
+	if ctx.Err() != nil {
+		return nil // asked to stop before scheduling began
+	}
+	if err != nil {
+		return err
+	}
+	if s.OnRecovery != nil && !report.Empty() {
+		s.OnRecovery(report)
+	}
+
 	ticker := time.NewTicker(s.pollInterval())
 	defer ticker.Stop()
 	for {
