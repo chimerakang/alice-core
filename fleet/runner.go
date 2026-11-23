@@ -175,14 +175,19 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 	if fresh {
 		reason = "started"
 	}
+	// The run is registered before the task is claimed, so there is never a
+	// moment when the task is stored as running and Running reports false.
+	// A supervisor seeing that would take the task for dead.
+	run := &activeRun{}
+	if !r.register(taskID, run) {
+		return RunResult{}, fmt.Errorf("%w: task %s already has a live run", ErrConflict, taskID)
+	}
+	defer r.unregister(taskID, run)
+
 	task, err := r.Store.Transition(ctx, taskID, StatusRunning, reason)
 	if err != nil {
 		return RunResult{}, err
 	}
-
-	run := &activeRun{}
-	r.register(taskID, run)
-	defer r.unregister(taskID, run)
 	_ = r.Store.SetLiveness(ctx, taskID, LivenessBusy)
 
 	// From here on the task is ours and must leave "running" whatever
@@ -667,13 +672,19 @@ func (r *Runner) stop(taskID string, mode stopMode, reason string) error {
 	return nil
 }
 
-func (r *Runner) register(taskID string, run *activeRun) {
+// register records a live run for the task. It reports false, changing
+// nothing, when the task already has one.
+func (r *Runner) register(taskID string, run *activeRun) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.runs == nil {
 		r.runs = make(map[string]*activeRun)
 	}
+	if _, exists := r.runs[taskID]; exists {
+		return false
+	}
 	r.runs[taskID] = run
+	return true
 }
 
 func (r *Runner) unregister(taskID string, run *activeRun) {
