@@ -16,17 +16,6 @@ type RuntimeAgent interface {
 	Handle(context.Context, Event) ([]Command, error)
 }
 
-// StateSnapshot is the shared, lightweight runtime-state shape exposed by
-// agent-like components. Future agents should reuse this vocabulary even when
-// their internal states differ.
-type StateSnapshot struct {
-	Agent    string
-	State    string
-	Since    time.Time
-	Terminal bool
-	Reason   string
-}
-
 // Event is the runtime input shape used between agents. It is intentionally
 // small and transport-friendly so it can later be logged as a trace span or
 // persisted without knowing every agent's private fields.

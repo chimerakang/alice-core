@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/chimerakang/alice-core/engine/errorclass"
+	"github.com/chimerakang/alice-core/errorclass"
 )
 
 const (

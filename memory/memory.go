@@ -5,6 +5,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -14,8 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chimerakang/alice-core/engine"
-	"github.com/chimerakang/alice-core/hermes"
+	"github.com/chimerakang/alice-core/chat"
 )
 
 const (
@@ -35,10 +35,44 @@ type Resolver interface {
 	Resolve(ctx context.Context, req Request) (Bundle, error)
 }
 
-// HermesTaskSource provides Hermes task history for a chat.
-type HermesTaskSource interface {
-	GetActiveForChat(chatID int64) (hermes.TaskState, error)
-	ListForChat(chatID int64, limit int) ([]hermes.TaskState, error)
+// TaskSource provides an orchestrator's task history for a chat. Each
+// orchestrator supplies its own adapter, so this package does not depend on
+// any of them.
+type TaskSource interface {
+	// GetActiveForChat returns the chat's current task, or ErrNoTask.
+	GetActiveForChat(chatID int64) (TaskSummary, error)
+	// ListForChat returns up to limit recent tasks for the chat, newest first.
+	ListForChat(chatID int64, limit int) ([]TaskSummary, error)
+}
+
+// HermesTaskSource is the previous name of TaskSource.
+//
+// Deprecated: use TaskSource.
+type HermesTaskSource = TaskSource
+
+// ErrNoTask is returned by TaskSource.GetActiveForChat when the chat has no
+// active task. Adapters must translate their own sentinel into this one.
+var ErrNoTask = errors.New("memory: no active task")
+
+// TaskSummary is the part of a stored task that memory renders into context.
+type TaskSummary struct {
+	ID          string
+	Status      string
+	IssueNumber int // 0 when the task is not linked to a GitHub issue
+	Goal        string
+	UpdatedAt   time.Time
+	// Progress is the task's accumulated free-text summary, if any.
+	Progress string
+	// Steps are the task's units of work, in order. Empty for orchestrators
+	// that do not decompose tasks.
+	Steps []TaskStep
+}
+
+// TaskStep is one unit of work inside a task.
+type TaskStep struct {
+	Description string
+	Status      string
+	Result      string
 }
 
 // GeneralMemorySource provides general task memory cards.
@@ -62,7 +96,7 @@ type Request struct {
 	IssueNumber    int
 	Mode           string
 	BudgetChars    int
-	RecentMessages []engine.ContextMessage
+	RecentMessages []chat.ContextMessage
 }
 
 // Bundle is a prioritised set of context sections.
@@ -147,28 +181,28 @@ type StaticHint struct {
 
 // UnifiedMemoryResolver combines Hermes task, general, and static sources.
 type UnifiedMemoryResolver struct {
-	tasks   HermesTaskSource
+	tasks   TaskSource
 	general GeneralMemorySource
 	static  StaticHintSource
 }
 
 // New creates a resolver with only the Hermes task source.
-func New(tasks HermesTaskSource) *UnifiedMemoryResolver {
+func New(tasks TaskSource) *UnifiedMemoryResolver {
 	return &UnifiedMemoryResolver{tasks: tasks}
 }
 
 // NewWithGeneral adds a general memory source.
-func NewWithGeneral(tasks HermesTaskSource, general GeneralMemorySource) *UnifiedMemoryResolver {
+func NewWithGeneral(tasks TaskSource, general GeneralMemorySource) *UnifiedMemoryResolver {
 	return &UnifiedMemoryResolver{tasks: tasks, general: general}
 }
 
 // NewWithAll creates a fully-populated resolver.
-func NewWithAll(tasks HermesTaskSource, general GeneralMemorySource, static StaticHintSource) *UnifiedMemoryResolver {
+func NewWithAll(tasks TaskSource, general GeneralMemorySource, static StaticHintSource) *UnifiedMemoryResolver {
 	return &UnifiedMemoryResolver{tasks: tasks, general: general, static: static}
 }
 
 // NewForSessionPolicy creates a resolver respecting session policy flags.
-func NewForSessionPolicy(tasks HermesTaskSource, projectDir string, decision engine.SessionPolicyDecision) *UnifiedMemoryResolver {
+func NewForSessionPolicy(tasks TaskSource, projectDir string, decision chat.SessionPolicyDecision) *UnifiedMemoryResolver {
 	var general GeneralMemorySource
 	if decision.AllowGeneralMemory {
 		general = nil // caller injects; no global here
@@ -253,7 +287,7 @@ func (r *UnifiedMemoryResolver) hermesTaskSection(ctx context.Context, req Reque
 	if resolvedIssueNumber(req) == 0 {
 		return Section{}, nil
 	}
-	tasks, err := r.loadHermesTasks(req)
+	tasks, err := r.loadTasks(req)
 	if err != nil {
 		return Section{}, err
 	}
@@ -264,7 +298,7 @@ func (r *UnifiedMemoryResolver) hermesTaskSection(ctx context.Context, req Reque
 	scope := "chat"
 	source := "hermes_task"
 	priority := 80
-	if issueNumber > 0 && tasks[0].GithubIssueNumber == issueNumber {
+	if issueNumber > 0 && tasks[0].IssueNumber == issueNumber {
 		scope = fmt.Sprintf("issue:%d", issueNumber)
 		source = "issue_task"
 		priority = 100
@@ -312,18 +346,18 @@ func (r *UnifiedMemoryResolver) staticSection(ctx context.Context, req Request) 
 	return Section{Source: "static_hint", Scope: "project:" + req.ProjectDir, Priority: 35, Text: text}, nil
 }
 
-func (r *UnifiedMemoryResolver) loadHermesTasks(req Request) ([]hermes.TaskState, error) {
+func (r *UnifiedMemoryResolver) loadTasks(req Request) ([]TaskSummary, error) {
 	issueNumber := resolvedIssueNumber(req)
 	hasIssue := issueNumber > 0
 
-	var tasks []hermes.TaskState
+	var tasks []TaskSummary
 	active, err := r.tasks.GetActiveForChat(req.ChannelID)
 	switch {
 	case err == nil:
-		if !hasIssue || active.GithubIssueNumber == issueNumber {
+		if !hasIssue || active.IssueNumber == issueNumber {
 			tasks = append(tasks, active)
 		}
-	case err != hermes.ErrNoTask:
+	case !errors.Is(err, ErrNoTask):
 		return nil, fmt.Errorf("load active hermes memory: %w", err)
 	}
 
@@ -343,7 +377,7 @@ func (r *UnifiedMemoryResolver) loadHermesTasks(req Request) ([]hermes.TaskState
 	}
 	if hasIssue {
 		for _, t := range history {
-			if t.GithubIssueNumber != issueNumber {
+			if t.IssueNumber != issueNumber {
 				continue
 			}
 			if _, ok := seen[t.ID]; ok {
@@ -417,7 +451,7 @@ func (ProjectStaticHintSource) ListStaticMemoryHints(ctx context.Context, req Re
 
 // BuildContextBridge produces a context summary from recent messages.
 // Used when injecting prior conversation into a new session.
-func BuildContextBridge(messages []engine.ContextMessage) string {
+func BuildContextBridge(messages []chat.ContextMessage) string {
 	if len(messages) == 0 {
 		return ""
 	}
@@ -670,7 +704,7 @@ func buildStaticHintContextSection(hints []StaticHint) string {
 	return sb.String()
 }
 
-func buildHermesTaskContextSection(tasks []hermes.TaskState) string {
+func buildHermesTaskContextSection(tasks []TaskSummary) string {
 	if len(tasks) == 0 {
 		return ""
 	}
@@ -691,10 +725,10 @@ func buildHermesTaskContextSection(tasks []hermes.TaskState) string {
 			sb.WriteString("- Task ID: " + task.ID + "\n")
 		}
 		if task.Status != "" {
-			sb.WriteString("- Status: " + string(task.Status) + "\n")
+			sb.WriteString("- Status: " + task.Status + "\n")
 		}
-		if task.GithubIssueNumber > 0 {
-			sb.WriteString(fmt.Sprintf("- GitHub issue: #%d\n", task.GithubIssueNumber))
+		if task.IssueNumber > 0 {
+			sb.WriteString(fmt.Sprintf("- GitHub issue: #%d\n", task.IssueNumber))
 		}
 		if goal != "" {
 			sb.WriteString("- Original request: " + clampText(goal, contextMaxChars) + "\n")
@@ -714,14 +748,14 @@ func buildHermesTaskContextSection(tasks []hermes.TaskState) string {
 	return sb.String()
 }
 
-func buildProgressSummary(task hermes.TaskState) string {
+func buildProgressSummary(task TaskSummary) string {
 	var lines []string
-	if acc := strings.TrimSpace(task.Accumulated); acc != "" {
+	if acc := strings.TrimSpace(task.Progress); acc != "" {
 		lines = append(lines, "Accumulated summary:\n"+clampText(acc, contextMaxChars))
 	}
-	if len(task.Plan) > 0 {
+	if len(task.Steps) > 0 {
 		lines = append(lines, "Subtasks:")
-		for i, sub := range task.Plan {
+		for i, sub := range task.Steps {
 			desc := strings.TrimSpace(sub.Description)
 			if desc == "" {
 				desc = "(no description)"

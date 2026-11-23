@@ -10,12 +10,16 @@ Reusable Go library extracted from [Alice](https://github.com/chimerakang/alice)
 |---------|-------------|
 | `client/` | `CLIClient` wrapping the `claude` CLI subprocess, `EnhancedCLIClient` with file attachment support, `Client` interface |
 | `agent/` | `Agent` struct with `Run`/`Abort`/`Reset`, dynamic model routing, sticky sessions, `ToolLogger`, `DecisionLogger`, injected dependency interfaces |
-| `memory/` | `UnifiedMemoryResolver` — context bridge across model/session switches, `ProjectStaticHintSource` reading CLAUDE.md |
+| `memory/` | `UnifiedMemoryResolver` — context bridge across model/session switches, `ProjectStaticHintSource` reading CLAUDE.md, `TaskSource` interface for orchestrator task history |
 | `git/` | `GitInfo` (branch, commit hash, dirty state) with 30-second TTL cache |
 | `storage/` | `SQLiteStorage` implementing `StorageBackend` (tool executions, decision logs, runtime events) + unified task store |
-| `engine/` | `ChatContext`, plan-execute FSM, session policy, recovery policy, review engine, graph walker |
-| `hermes/` | Planner/executor system, `SQLiteTaskStore`, task state machine, snapshot |
-| `issueops/` | GitHub issue checklist mapping, evidence, service |
+| `chat/` | `ChatContext` and its lifecycle, native session policy, `ExecutionLifecycle`, error recovery policy. No orchestrator dependency |
+| `errorclass/` | Classifies error text as rate limit, overload, network reset, timeout, EOF, context overflow, or killed |
+| `ghissue/` | GitHub issues via the `gh` CLI: fetch, checklist parsing and write-back, comments, labels, issue lifecycle FSM |
+| `verify/` | Acceptance checks judged by exit code: `Step` interface, shell-command steps, `go build` / `tsc` / `jq` steps, path deny-list guard |
+| `engine/` | Plan-execute FSM, recovery policy for plan-execute modes, review engine, graph walker. Re-exports `chat` types for compatibility |
+| `hermes/` | Planner/executor system, `SQLiteTaskStore`, task state machine, snapshot. Re-exports `ghissue` types for compatibility |
+| `issueops/` | GitHub issue workflow over orchestrator-neutral `WorkItem`s: checklist mapping, evidence, guarded sync and close |
 | `process/` | External command runner (`RunOutput`, `Command`) |
 
 ## Requirements
