@@ -188,6 +188,28 @@ var schema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_fleet_audit_task ON fleet_audit (task_id, id)`,
 	`CREATE INDEX IF NOT EXISTS idx_fleet_audit_project ON fleet_audit (project_id, id)`,
+	// How each user wants to be notified, and what was done with each wake.
+	`CREATE TABLE IF NOT EXISTS fleet_notify_prefs (
+		user_id    TEXT PRIMARY KEY,
+		mode       TEXT NOT NULL,
+		grant_json TEXT NOT NULL DEFAULT '{}',
+		since      INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS fleet_notify_log (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id     TEXT NOT NULL,
+		wake_id     INTEGER NOT NULL,
+		task_id     TEXT NOT NULL DEFAULT '',
+		project_id  TEXT NOT NULL DEFAULT '',
+		kind        TEXT NOT NULL,
+		detail      TEXT NOT NULL DEFAULT '',
+		disposition TEXT NOT NULL,
+		note        TEXT NOT NULL DEFAULT '',
+		created_at  INTEGER NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_fleet_notify_log_user ON fleet_notify_log (user_id, id)`,
+	`CREATE INDEX IF NOT EXISTS idx_fleet_notify_log_task ON fleet_notify_log (user_id, task_id, disposition, id)`,
 	// The event log is history: once written, a row is never changed or removed.
 	`CREATE TRIGGER IF NOT EXISTS fleet_task_events_no_update
 		BEFORE UPDATE ON fleet_task_events

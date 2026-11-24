@@ -16,7 +16,7 @@ Reusable Go library extracted from [Alice](https://github.com/chimerakang/alice)
 | `chat/` | `ChatContext` and its lifecycle, native session policy, `ExecutionLifecycle`, error recovery policy. No orchestrator dependency |
 | `errorclass/` | Classifies error text as rate limit, overload, network reset, timeout, EOF, context overflow, or killed |
 | `ghissue/` | GitHub issues via the `gh` CLI: fetch, checklist parsing and write-back, comments, labels, issue lifecycle FSM |
-| `fleet/` | Command layer for running agents across projects: project registry, task model and lifecycle state machine, append-only task event log, a `Runner` (one agent per task in its own worktree), a `Verifier` (acceptance by exit code), a `Scheduler` (queue and concurrency limits), a `Deliverer` (commit, push, pull request, approval) and a `Watcher` (zero-token supervision with a durable wake queue) |
+| `fleet/` | Command layer for running agents across projects: project registry, task model and lifecycle state machine, append-only task event log, a `Runner` (one agent per task in its own worktree), a `Verifier` (acceptance by exit code), a `Scheduler` (queue and concurrency limits), a `Deliverer` (commit, push, pull request, approval), a `Watcher` (zero-token supervision with a durable wake queue), and the operating surface: `Commander` (audited commands and queries), `Bus` (resumable event stream) and `Notifier` (normal / quiet / afk) |
 | `worktree/` | Per-task git worktrees: create, attach, list, prune, and removal that refuses uncommitted work |
 | `verify/` | Acceptance checks judged by exit code: `Step` interface, shell-command steps, `go build` / `tsc` / `jq` steps, path deny-list guard |
 | `engine/` | Plan-execute FSM, recovery policy for plan-execute modes, review engine, graph walker. Re-exports `chat` types for compatibility |
@@ -233,6 +233,51 @@ The issue gets a comment when work starts and when it ends. A checklist item is 
 `fleet.Watcher` supervises without calling a model. It turns status changes into wakes (review ready, completed, failed, question, decision needed), reports running tasks that have gone quiet or over budget, and keeps each task's `Liveness` honest: with no evidence either way it is `unknown`, never `idle`. Wakes are durable: read them with `Store.PendingWakes` and acknowledge each with `Store.ConsumeWake` once it has been acted on.
 
 `Scheduler.Run` begins with `Runner.Recover`, which reconciles stored state with reality after a crash or restart: a task stored as running with no process behind it is marked dead and moved to `needs_decision` with its session intact, an agent process that outlived the host is stopped, and checkouts that no unfinished task owns are reported (never deleted). Set `Scheduler.OnRecovery` to receive the report.
+
+### Operating the fleet
+
+`fleet.Commander` is the single entry point for a chat bot, a web handler or a script. Every command names who gave it and is written to the audit log, refusals included.
+
+```go
+cmd := &fleet.Commander{Store: store, Scheduler: sched}
+me := fleet.Actor{ID: "ck", Via: "telegram"}
+
+task, err := cmd.Dispatch(ctx, me, fleet.DispatchRequest{ProjectID: "app", Goal: "修好登入測試"})
+task, err = cmd.Dispatch(ctx, me, fleet.DispatchRequest{ProjectID: "app", Issue: 42})
+
+cmd.Reply(ctx, me, fleet.ReplyRequest{TaskID: task.ID, Text: "用方案 B"}) // answers in the background
+cmd.Approve(ctx, me, task.ID)  // land a review_ready task
+cmd.Merge(ctx, me, task.ID)    // also merges the PR of a finished direct-pr task
+cmd.Cancel(ctx, me, task.ID, "")
+cmd.Retry(ctx, me, task.ID)
+cmd.Discard(ctx, me, task.ID)  // cancel and remove the checkout; the branch is kept
+
+diff, err := cmd.TaskDiff(ctx, task.ID)                     // committed and uncommitted work
+events, next, more, err := cmd.TaskEvents(ctx, task.ID, 0, 50) // paged history
+digest, err := cmd.Digest(ctx)                              // counts and today's usage per project
+```
+
+`fleet.Bus` streams events as they are stored. It is a tail on the durable event log, so a subscriber that reconnects with the last event ID it saw misses nothing and repeats nothing:
+
+```go
+bus := &fleet.Bus{Store: store}
+events, err := bus.Subscribe(ctx, fleet.EventFilter{Types: fleet.LifecycleEvents, AfterID: lastSeen})
+go bus.ForwardTools(ctx, myEventSink, fleet.EventFilter{}) // feeds an agent.EventSink
+```
+
+`fleet.Notifier` turns the wake queue into messages for the owner, merging everything pending about a task into one message and never messaging about a task more often than `MinInterval`. Three modes: `normal` delivers everything; `quiet` delivers only what cannot move without the owner and holds the rest; `afk` delivers nothing, acts only within an explicit grant (`approve`, `resume`, optionally limited to projects) that must carry an expiry, and hands over a summary on return or when the grant lapses.
+
+```go
+notifier := &fleet.Notifier{Store: store, Commander: cmd, User: "ck", Deliver: sendToTelegram}
+go notifier.Run(ctx)
+
+notifier.SetMode(ctx, fleet.NotifyAFK, &fleet.AFKGrant{
+    Actions:   []fleet.AFKAction{fleet.AFKApprove},
+    Projects:  []string{"app"},
+    ExpiresAt: time.Now().Add(8 * time.Hour),
+})
+summary, err := notifier.Back(ctx) // what was handled and what was held
+```
 
 Task lifecycle: `queued → running → verifying → review_ready → done`, with `needs_decision`, `failed` and `cancelled` as the exits. `fleet.CanTransition` holds the full table; an illegal change returns a `*fleet.TransitionError`.
 
