@@ -228,7 +228,7 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 	defer cancel()
 	// The process has exited and the Runner saw it happen.
 	_ = r.Store.SetLiveness(finalCtx, taskID, LivenessIdle)
-	final, err := r.Store.Transition(finalCtx, taskID, end.status, end.reason)
+	final, err := r.Store.transition(finalCtx, taskID, end.status, end.reason, end.requested)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("fleet: record end of run for task %s (%s: %s): %w", taskID, end.status, end.reason, err)
 	}
@@ -257,8 +257,10 @@ func outcomeFor(status Status) Outcome {
 
 // runEnd is where a run leaves its task.
 type runEnd struct {
-	status     Status
-	reason     string
+	status Status
+	reason string
+	// requested is true when the run ended because a stop was asked for.
+	requested  bool
 	text       string
 	usage      Usage
 	reportPath string
@@ -334,9 +336,9 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 
 	switch {
 	case mode == stopCancel:
-		end.status, end.reason = StatusCancelled, stopReason
+		end.status, end.reason, end.requested = StatusCancelled, stopReason, true
 	case mode == stopInterrupt:
-		end.status, end.reason = StatusNeedsDecision, stopReason
+		end.status, end.reason, end.requested = StatusNeedsDecision, stopReason, true
 	case ctx.Err() != nil:
 		end.status, end.reason = StatusNeedsDecision, "runner stopped: "+ctx.Err().Error()
 	case waitErr != nil && elapsed >= timeout:

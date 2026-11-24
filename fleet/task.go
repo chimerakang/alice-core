@@ -261,11 +261,24 @@ type Event struct {
 	CreatedAt time.Time
 }
 
+// EventLiveness is the event type recorded when a task's liveness changes.
+const EventLiveness = "liveness"
+
+// LivenessChange is the payload of an EventLiveness event.
+type LivenessChange struct {
+	From Liveness `json:"from"`
+	To   Liveness `json:"to"`
+}
+
 // StatusChange is the payload of an EventStatus event.
 type StatusChange struct {
 	From   Status `json:"from"`
 	To     Status `json:"to"`
 	Reason string `json:"reason,omitempty"`
+	// Requested marks a change that came from a stop someone asked for: a
+	// cancel, an interrupt, or the fleet pausing a task over its budget.
+	// Whoever asked already knows, so no wake is raised for it.
+	Requested bool `json:"requested,omitempty"`
 }
 
 // TaskOrder selects how ListTasks sorts.

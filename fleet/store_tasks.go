@@ -207,6 +207,12 @@ func (f TaskFilter) where() (string, []any) {
 // ErrInvalidTransition) and leaves the task untouched. If another caller
 // changed the task's status first, ErrConflict is returned.
 func (s *Store) Transition(ctx context.Context, taskID string, to Status, reason string) (Task, error) {
+	return s.transition(ctx, taskID, to, reason, false)
+}
+
+// transition is Transition with the change optionally marked as requested:
+// the result of a stop someone asked for, which therefore needs no wake.
+func (s *Store) transition(ctx context.Context, taskID string, to Status, reason string, requested bool) (Task, error) {
 	var out Task
 	err := s.inTx(ctx, func(tx querier) error {
 		current, err := getTask(ctx, tx, taskID)
@@ -247,7 +253,7 @@ func (s *Store) Transition(ctx context.Context, taskID string, to Status, reason
 			return fmt.Errorf("%w: %s", ErrConflict, taskID)
 		}
 		if _, err := appendEvent(ctx, tx, taskID, EventStatus,
-			StatusChange{From: current.Status, To: to, Reason: reason}, now); err != nil {
+			StatusChange{From: current.Status, To: to, Reason: reason, Requested: requested}, now); err != nil {
 			return err
 		}
 		out, err = getTask(ctx, tx, taskID)
@@ -274,12 +280,42 @@ func (s *Store) SetPullRequest(ctx context.Context, taskID, url string, number i
 	return s.updateTask(ctx, taskID, `pr_url = ?, pr_number = ?`, url, number)
 }
 
-// SetLiveness records what is known about the task's agent process.
+// SetLiveness records what is known about the task's agent process. A change
+// is written to the task's event log; setting the value it already has does
+// nothing.
 func (s *Store) SetLiveness(ctx context.Context, taskID string, liveness Liveness) error {
 	if !liveness.Valid() {
 		return fmt.Errorf("%w: unknown liveness %q", ErrInvalidTask, liveness)
 	}
-	return s.updateTask(ctx, taskID, `liveness = ?`, string(liveness))
+	return s.inTx(ctx, func(tx querier) error {
+		var current string
+		err := tx.QueryRowContext(ctx, `SELECT liveness FROM fleet_tasks WHERE id = ?`, taskID).Scan(&current)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %s", ErrTaskNotFound, taskID)
+		}
+		if err != nil {
+			return fmt.Errorf("fleet: load task: %w", err)
+		}
+		if Liveness(current) == liveness {
+			return nil
+		}
+		now := toMillis(s.now())
+		if _, err := tx.ExecContext(ctx, `UPDATE fleet_tasks SET liveness = ?, updated_at = ? WHERE id = ?`,
+			string(liveness), now, taskID); err != nil {
+			return fmt.Errorf("fleet: update task liveness: %w", err)
+		}
+		_, err = appendEvent(ctx, tx, taskID, EventLiveness, LivenessChange{From: Liveness(current), To: liveness}, now)
+		return err
+	})
+}
+
+// lastEventID returns the ID of the newest event in the log, or 0.
+func (s *Store) lastEventID(ctx context.Context) (int64, error) {
+	var id sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(id) FROM fleet_task_events`).Scan(&id); err != nil {
+		return 0, fmt.Errorf("fleet: load last event: %w", err)
+	}
+	return id.Int64, nil
 }
 
 // lastEvent returns the task's most recent event of a type, if it has one.

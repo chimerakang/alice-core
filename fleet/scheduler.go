@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -43,6 +44,7 @@ type Scheduler struct {
 	OnRecovery func(RecoveryReport)
 
 	mu       sync.Mutex
+	base     context.Context         // the context Run was given; background work lives as long as it does
 	inflight map[string]inflightTask // tasks this scheduler started and has not finished
 	wg       sync.WaitGroup
 	kick     chan struct{}
@@ -70,6 +72,10 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 	// Tasks left active by a previous process would hold their slots for
 	// ever, so they are reconciled before anything is scheduled.
+	s.mu.Lock()
+	s.base = ctx
+	s.mu.Unlock()
+
 	report, err := s.Runner.Recover(ctx)
 	if ctx.Err() != nil {
 		return nil // asked to stop before scheduling began
@@ -285,6 +291,70 @@ func (s *Scheduler) cycle(ctx context.Context, taskID string, opts RunOptions, a
 		res.Task = delivery.Task
 	}
 	return res, err
+}
+
+// Go starts RunTask for a task in the background and returns at once. It is
+// how a task that is waiting on the owner gets going again: an answer, more
+// instructions, or simply "carry on".
+//
+// The run lives as long as the context given to Run, not the caller's, so a
+// request handler can return while the agent works. Problems that can be
+// seen up front are returned: a task that does not exist, one that cannot
+// run from its current status, one that already has a live run, or a
+// reached budget limit. Run waits for runs started here when it shuts down.
+func (s *Scheduler) Go(ctx context.Context, taskID string, opts RunOptions) error {
+	if s.Store == nil || s.Runner == nil {
+		return errors.New("fleet: Scheduler needs a Store and a Runner")
+	}
+	task, err := s.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if !CanTransition(task.Status, StatusRunning) {
+		return &TransitionError{TaskID: taskID, From: task.Status, To: StatusRunning}
+	}
+	if s.Runner.Running(taskID) {
+		return fmt.Errorf("%w: task %s already has a live run", ErrConflict, taskID)
+	}
+	if s.Runner.Budget != nil && !opts.IgnoreBudget {
+		project, err := s.Store.GetProject(ctx, task.ProjectID)
+		if err != nil {
+			return err
+		}
+		over, err := s.Runner.Budget.view(s.Store).admit(ctx, task, project)
+		if err != nil {
+			return err
+		}
+		if over != nil {
+			return over
+		}
+	}
+
+	s.mu.Lock()
+	base := s.base
+	if base == nil {
+		base = context.WithoutCancel(ctx)
+	}
+	if s.inflight == nil {
+		s.inflight = make(map[string]inflightTask)
+	}
+	if _, busy := s.inflight[taskID]; busy {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: task %s is already being started", ErrConflict, taskID)
+	}
+	s.inflight[taskID] = inflightTask{projectID: task.ProjectID, branch: task.Branch}
+	s.wg.Add(1)
+	s.mu.Unlock()
+
+	go func() {
+		defer s.wg.Done()
+		_, _ = s.RunTask(base, taskID, opts)
+		s.mu.Lock()
+		delete(s.inflight, taskID)
+		s.mu.Unlock()
+		s.Kick()
+	}()
+	return nil
 }
 
 // stopForBudget hands a task that cannot continue for lack of budget to the
