@@ -261,6 +261,15 @@ type Event struct {
 	CreatedAt time.Time
 }
 
+// EventLiveness is the event type recorded when a task's liveness changes.
+const EventLiveness = "liveness"
+
+// LivenessChange is the payload of an EventLiveness event.
+type LivenessChange struct {
+	From Liveness `json:"from"`
+	To   Liveness `json:"to"`
+}
+
 // StatusChange is the payload of an EventStatus event.
 type StatusChange struct {
 	From   Status `json:"from"`

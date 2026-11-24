@@ -235,11 +235,13 @@ func TestRun_ShipLifecycle(t *testing.T) {
 	}
 
 	wantEvents := []string{
-		EventStatus, // created
-		EventStatus, // queued -> running
+		EventStatus,   // created
+		EventStatus,   // queued -> running
+		EventLiveness, // unknown -> busy
 		EventRunStarted,
 		EventAgentInit, EventAgentText, EventAgentToolUse, EventAgentToolResult, EventAgentResult,
-		EventStatus, // running -> verifying
+		EventLiveness, // busy -> idle
+		EventStatus,   // running -> verifying
 	}
 	if got := e.eventTypes(task.ID); !reflect.DeepEqual(got, wantEvents) {
 		t.Errorf("events =\n  %v\nwant\n  %v", got, wantEvents)

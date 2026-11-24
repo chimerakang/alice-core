@@ -46,6 +46,18 @@ type Wake struct {
 	ConsumedAt *time.Time
 }
 
+// EventWake is the event type recorded when a wake is raised. Its TaskID is
+// empty for a wake that concerns a whole project or the whole fleet.
+const EventWake = "wake"
+
+// WakeRaised is the payload of an EventWake event.
+type WakeRaised struct {
+	WakeID    int64    `json:"wake_id"`
+	Kind      WakeKind `json:"kind"`
+	Detail    string   `json:"detail,omitempty"`
+	ProjectID string   `json:"project_id,omitempty"`
+}
+
 // ErrWakeNotFound is returned when no wake has the given ID.
 var ErrWakeNotFound = errors.New("fleet: wake not found")
 
@@ -75,6 +87,13 @@ func enqueueWakes(ctx context.Context, tx querier, wakes []newWake, nowMillis in
 		id, err := res.LastInsertId()
 		if err != nil {
 			return nil, fmt.Errorf("fleet: queue wake: %w", err)
+		}
+		// The wake also goes into the event log, so a subscriber following
+		// one ordered stream sees it in sequence with everything else.
+		if _, err := appendEvent(ctx, tx, w.taskID, EventWake, WakeRaised{
+			WakeID: id, Kind: w.kind, Detail: w.detail, ProjectID: w.projectID,
+		}, nowMillis); err != nil {
+			return nil, err
 		}
 		added = append(added, Wake{
 			ID: id, TaskID: w.taskID, ProjectID: w.projectID, Kind: w.kind, Detail: w.detail,
