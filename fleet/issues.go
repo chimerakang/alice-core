@@ -94,6 +94,8 @@ type DispatchOptions struct {
 	Shape    Shape
 	Model    string
 	Priority int
+	// Budget, when set, caps the task's total usage. See Task.Budget.
+	Budget Limit
 }
 
 // Dispatch queues a task for an issue of the project. The task's goal is the
@@ -132,7 +134,7 @@ func (t *IssueTracker) Dispatch(ctx context.Context, projectID string, number in
 
 	items := openItems(issue)
 	task, err := t.Store.CreateTask(ctx, NewTask{
-		ProjectID: projectID, Shape: opts.Shape, Model: opts.Model, Priority: opts.Priority,
+		ProjectID: projectID, Shape: opts.Shape, Model: opts.Model, Priority: opts.Priority, Budget: opts.Budget,
 		Goal:   issueGoal(number, issue, items),
 		Source: Source{Kind: SourceIssue, IssueNumber: number},
 	})

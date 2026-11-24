@@ -55,6 +55,7 @@ const (
 	CmdApprove         = "approve"
 	CmdMerge           = "merge"
 	CmdDiscard         = "discard"
+	CmdPass            = "pass"
 )
 
 // EventDiscarded is recorded when a task's result is thrown away.
@@ -123,6 +124,8 @@ type DispatchRequest struct {
 	Shape    Shape
 	Model    string
 	Priority int
+	// Budget, when set, caps this task's total usage. See Task.Budget.
+	Budget Limit
 }
 
 // Dispatch queues a task and nudges the scheduler to look at it.
@@ -137,10 +140,10 @@ func (c *Commander) Dispatch(ctx context.Context, actor Actor, req DispatchReque
 	)
 	if req.Issue > 0 {
 		detail = fmt.Sprintf("issue #%d", req.Issue)
-		task, err = c.issues().Dispatch(ctx, req.ProjectID, req.Issue, DispatchOptions{Shape: req.Shape, Model: req.Model, Priority: req.Priority})
+		task, err = c.issues().Dispatch(ctx, req.ProjectID, req.Issue, DispatchOptions{Shape: req.Shape, Model: req.Model, Priority: req.Priority, Budget: req.Budget})
 	} else {
 		task, err = c.Store.CreateTask(ctx, NewTask{
-			ProjectID: req.ProjectID, Goal: req.Goal, Shape: req.Shape, Model: req.Model, Priority: req.Priority,
+			ProjectID: req.ProjectID, Goal: req.Goal, Shape: req.Shape, Model: req.Model, Priority: req.Priority, Budget: req.Budget,
 		})
 	}
 	if err == nil && c.Scheduler != nil {
@@ -225,6 +228,42 @@ func (c *Commander) Reply(ctx context.Context, actor Actor, req ReplyRequest) (T
 		}
 	}
 	return task, c.audit(ctx, actor, CmdReply, task.ProjectID, req.TaskID, firstLine(req.Text, 200), err)
+}
+
+// Pass waves a blocked task through: the owner accepts its work as it
+// stands, although the task stopped at needs_decision (checks that kept
+// failing, a question, a lost process). The task becomes review_ready and a
+// ship task is then delivered as far as its trust mode allows, exactly as if
+// verification had passed. Landing it is still a separate Approve.
+func (c *Commander) Pass(ctx context.Context, actor Actor, taskID string) (Task, error) {
+	if err := c.check(actor); err != nil {
+		return Task{}, err
+	}
+	task, err := c.pass(ctx, actor, taskID)
+	return task, c.audit(ctx, actor, CmdPass, c.projectOf(ctx, task, taskID), taskID, "", err)
+}
+
+func (c *Commander) pass(ctx context.Context, actor Actor, taskID string) (Task, error) {
+	task, err := c.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return Task{}, err
+	}
+	// The lifecycle also lets a verifying task become review_ready; that
+	// step belongs to the Verifier, not to the owner.
+	if task.Status != StatusNeedsDecision {
+		return task, &TransitionError{TaskID: task.ID, From: task.Status, To: StatusReviewReady}
+	}
+	if task, err = c.Store.Transition(ctx, taskID, StatusReviewReady, "waved through by "+actor.ID); err != nil {
+		return task, err
+	}
+	if task.Shape != ShapeShip {
+		return task, nil
+	}
+	delivery, err := c.deliverer().Deliver(ctx, taskID)
+	if err != nil {
+		return task, err
+	}
+	return delivery.Task, nil
 }
 
 // Approve is the owner accepting a task that is review_ready. It lands the

@@ -656,3 +656,68 @@ func TestAudit_FiltersAndPaging(t *testing.T) {
 		t.Errorf("no match must be an empty slice: %#v", none)
 	}
 }
+
+func TestCommander_Pass(t *testing.T) {
+	t.Run("waves a blocked ship task through and delivers it", func(t *testing.T) {
+		e := newDeliveryEnv(t, TrustLocalOnly)
+		c := &Commander{Store: e.store, Deliverer: e.deliverer}
+		e.script(lineInit, "#touch feature.txt", lineResultOK)
+		task := e.task(NewTask{ProjectID: "web", Goal: "Add the feature"})
+		e.run(task.ID, RunOptions{})
+		walk(t, e.store, task.ID, StatusNeedsDecision) // its checks kept failing
+
+		got, err := c.Pass(ctx, owner, task.ID)
+		if err != nil || got.Status != StatusReviewReady {
+			t.Fatalf("Pass = %s (%q), %v", got.Status, got.StatusReason, err)
+		}
+		events, err := e.store.ListEvents(ctx, task.ID, 0, 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var waved, committed bool
+		for _, ev := range events {
+			if ev.Type == EventStatus && strings.Contains(string(ev.Payload), "waved through by ck") {
+				waved = true
+			}
+			committed = committed || ev.Type == EventDeliveryCommitted
+		}
+		if !waved || !committed {
+			t.Fatalf("waved=%v committed=%v; want the override recorded and the work committed", waved, committed)
+		}
+		if entries := e.audit(AuditFilter{TaskID: task.ID}); len(entries) != 1 || entries[0].Command != CmdPass {
+			t.Errorf("audit = %+v", entries)
+		}
+		// Landing it is still the owner's separate decision.
+		if done, err := c.Approve(ctx, owner, task.ID); err != nil || done.Status != StatusDone {
+			t.Fatalf("Approve after Pass = %s, %v", done.Status, err)
+		}
+	})
+
+	t.Run("only a task that is waiting on a decision", func(t *testing.T) {
+		e := newRunnerEnv(t)
+		c := e.commander()
+		task := e.task(NewTask{})
+		for _, status := range []Status{StatusQueued, StatusRunning, StatusVerifying} {
+			if status != StatusQueued {
+				walk(t, e.store, task.ID, status)
+			}
+			if _, err := c.Pass(ctx, owner, task.ID); !errors.Is(err, ErrInvalidTransition) {
+				t.Errorf("Pass on a %s task: %v", status, err)
+			}
+			if got, _ := e.store.GetTask(ctx, task.ID); got.Status != status {
+				t.Fatalf("a refused Pass moved the task to %s", got.Status)
+			}
+		}
+	})
+
+	t.Run("a scout is not delivered", func(t *testing.T) {
+		e := newRunnerEnv(t)
+		c := e.commander()
+		task := e.task(NewTask{Shape: ShapeScout})
+		walk(t, e.store, task.ID, StatusRunning, StatusNeedsDecision)
+		got, err := c.Pass(ctx, owner, task.ID)
+		if err != nil || got.Status != StatusReviewReady {
+			t.Fatalf("Pass = %s, %v", got.Status, err)
+		}
+	})
+}

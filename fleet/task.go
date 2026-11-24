@@ -214,6 +214,11 @@ type Task struct {
 	InputTokens  int64
 	OutputTokens int64
 	CostUSD      float64
+	// Budget is this task's own cap on its total usage. When set it
+	// replaces the project's and the fleet's per-task limit; the daily
+	// limits still apply. Like every limit it is enforced only when the
+	// Runner has a Budget, which may be an empty one.
+	Budget Limit
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -237,6 +242,8 @@ type NewTask struct {
 	Source   Source
 	Model    string
 	Priority int
+	// Budget, when set, caps this task's total usage. See Task.Budget.
+	Budget Limit
 }
 
 // Usage is an increment of token and cost consumption.
