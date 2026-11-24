@@ -724,3 +724,24 @@ func TestTransition_ConcurrentCallersOnPooledDatabase(t *testing.T) {
 		}
 	}
 }
+
+func TestStore_LastEvent(t *testing.T) {
+	store := storeWithProject(t)
+	task := mustCreate(t, store, NewTask{})
+
+	if _, ok, err := store.LastEvent(ctx, task.ID, EventAgentText); err != nil || ok {
+		t.Fatalf("no such event yet: ok=%v err=%v", ok, err)
+	}
+	for _, text := range []string{"first", "second"} {
+		if _, err := store.AppendEvent(ctx, task.ID, EventAgentText, map[string]string{"text": text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.AppendEvent(ctx, task.ID, EventAgentToolUse, map[string]string{"tool": "Read"}); err != nil {
+		t.Fatal(err)
+	}
+	ev, ok, err := store.LastEvent(ctx, task.ID, EventAgentText)
+	if err != nil || !ok || string(ev.Payload) != `{"text":"second"}` {
+		t.Fatalf("LastEvent = %s, %v, %v", ev.Payload, ok, err)
+	}
+}

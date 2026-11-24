@@ -329,6 +329,13 @@ func (s *Store) lastEventID(ctx context.Context) (int64, error) {
 	return id.Int64, nil
 }
 
+// LastEvent returns the task's most recent event of a type; ok is false when
+// it has none. It is how to read, say, the last thing an agent said without
+// paging through the task's whole history.
+func (s *Store) LastEvent(ctx context.Context, taskID, eventType string) (ev Event, ok bool, err error) {
+	return s.lastEvent(ctx, taskID, eventType)
+}
+
 // lastEvent returns the task's most recent event of a type, if it has one.
 func (s *Store) lastEvent(ctx context.Context, taskID, eventType string) (Event, bool, error) {
 	var (
