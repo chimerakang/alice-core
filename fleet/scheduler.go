@@ -26,6 +26,10 @@ type Scheduler struct {
 	// trust mode allows: committing, pushing, opening a pull request. When
 	// nil, verified tasks simply wait at review_ready.
 	Deliverer *Deliverer
+	// Issues, when set, keeps the GitHub issue behind an issue-driven task
+	// informed: a comment when work starts and when it ends, and checklist
+	// items ticked once the work is verified.
+	Issues *IssueTracker
 	// MaxConcurrent caps active tasks across all projects. Zero means
 	// DefaultSchedulerConcurrency. Each project's own MaxConcurrent applies
 	// on top of it.
@@ -157,7 +161,14 @@ func (s *Scheduler) Tick(ctx context.Context) ([]string, error) {
 
 	limit := s.maxConcurrent()
 	projects := make(map[string]Project)
+	budget := s.Runner.Budget.view(s.Store)
 	var started []string
+	var blocked []newWake
+	defer func() {
+		if len(blocked) > 0 {
+			_, _ = s.Store.raiseWakes(context.WithoutCancel(ctx), blocked...)
+		}
+	}()
 	for _, task := range queued {
 		if len(occupied) >= limit {
 			break
@@ -173,6 +184,14 @@ func (s *Scheduler) Tick(ctx context.Context) ([]string, error) {
 			projects[task.ProjectID] = project
 		}
 		if perProject[task.ProjectID] >= project.MaxConcurrent {
+			continue
+		}
+		// A task past a spending limit waits in the queue; the owner is
+		// told once per limit per day.
+		if over, err := budget.admit(ctx, task, project); err != nil {
+			continue
+		} else if over != nil {
+			blocked = append(blocked, budgetWake(over, budget.day()))
 			continue
 		}
 		branch := task.Branch
@@ -212,8 +231,32 @@ func (s *Scheduler) Tick(ctx context.Context) ([]string, error) {
 // a task that is waiting on the owner through the same run-and-verify cycle,
 // for example with an answer or further instructions in opts.
 func (s *Scheduler) RunTask(ctx context.Context, taskID string, opts RunOptions) (RunResult, error) {
+	before, lookupErr := s.Store.GetTask(ctx, taskID)
+	tracked := lookupErr == nil && s.Issues.isTracked(before)
+	if tracked && before.Status == StatusQueued && opts.OnStart == nil {
+		opts.OnStart = func(t Task) { s.Issues.Started(ctx, t) }
+	}
+	note := func(res RunResult) {
+		if tracked {
+			s.Issues.NoteResult(ctx, res.Task, res.Text)
+		}
+	}
+
+	res, err := s.cycle(ctx, taskID, opts, note)
+	if err == nil && tracked {
+		s.Issues.Finished(ctx, res.Task)
+	}
+	return res, err
+}
+
+// cycle is the run, verify, retry, deliver sequence. afterRun sees the
+// result of every agent run in it.
+func (s *Scheduler) cycle(ctx context.Context, taskID string, opts RunOptions, afterRun func(RunResult)) (RunResult, error) {
 	verifier := s.verifier()
 	res, err := s.Runner.Run(ctx, taskID, opts)
+	if err == nil {
+		afterRun(res)
+	}
 	for err == nil && res.Outcome == OutcomeFinished {
 		check, verr := verifier.Verify(ctx, taskID)
 		if verr != nil {
@@ -224,6 +267,15 @@ func (s *Scheduler) RunTask(ctx context.Context, taskID string, opts RunOptions)
 			break
 		}
 		res, err = s.Runner.Run(ctx, taskID, RunOptions{Instruction: check.Feedback})
+		var over *BudgetError
+		if errors.As(err, &over) {
+			// The budget ran out between the check and the retry. The task
+			// must not be left verifying with nothing coming to check it.
+			return s.stopForBudget(ctx, taskID, res, over)
+		}
+		if err == nil {
+			afterRun(res)
+		}
 	}
 	if err == nil && s.Deliverer != nil && res.Task.Shape == ShapeShip && res.Task.Status == StatusReviewReady {
 		delivery, derr := s.Deliverer.Deliver(ctx, taskID)
@@ -233,6 +285,20 @@ func (s *Scheduler) RunTask(ctx context.Context, taskID string, opts RunOptions)
 		res.Task = delivery.Task
 	}
 	return res, err
+}
+
+// stopForBudget hands a task that cannot continue for lack of budget to the
+// owner, and tells them why.
+func (s *Scheduler) stopForBudget(ctx context.Context, taskID string, res RunResult, over *BudgetError) (RunResult, error) {
+	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	task, err := s.Store.Transition(recCtx, taskID, StatusNeedsDecision, over.Reason())
+	if err != nil {
+		return res, err
+	}
+	_, _ = s.Store.raiseWakes(recCtx, budgetWake(over, s.Runner.Budget.view(s.Store).day()))
+	res.Task, res.Outcome, res.Reason = task, OutcomeNeedsDecision, over.Reason()
+	return res, nil
 }
 
 func (s *Scheduler) verifier() *Verifier {

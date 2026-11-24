@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // CreateTask queues a new task for a project. The project's trust mode at
@@ -310,9 +311,46 @@ func (s *Store) AddUsage(ctx context.Context, taskID string, u Usage) error {
 	if u.InputTokens < 0 || u.OutputTokens < 0 || u.CostUSD < 0 {
 		return fmt.Errorf("%w: usage cannot be negative", ErrInvalidTask)
 	}
-	return s.updateTask(ctx, taskID,
-		`input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, cost_usd = cost_usd + ?`,
-		u.InputTokens, u.OutputTokens, u.CostUSD)
+	return s.inTx(ctx, func(tx querier) error {
+		now := toMillis(s.now())
+		var projectID string
+		err := tx.QueryRowContext(ctx, `SELECT project_id FROM fleet_tasks WHERE id = ?`, taskID).Scan(&projectID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %s", ErrTaskNotFound, taskID)
+		}
+		if err != nil {
+			return fmt.Errorf("fleet: load task: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE fleet_tasks SET
+			input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, cost_usd = cost_usd + ?,
+			updated_at = ? WHERE id = ?`, u.InputTokens, u.OutputTokens, u.CostUSD, now, taskID); err != nil {
+			return fmt.Errorf("fleet: update task usage: %w", err)
+		}
+		// The ledger row is what makes "how much today" answerable.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO fleet_usage
+			(task_id, project_id, input_tokens, output_tokens, cost_usd, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+			taskID, projectID, u.InputTokens, u.OutputTokens, u.CostUSD, now); err != nil {
+			return fmt.Errorf("fleet: record usage: %w", err)
+		}
+		return nil
+	})
+}
+
+// UsageSince totals the usage recorded at or after since. projectID "" totals
+// the whole fleet.
+func (s *Store) UsageSince(ctx context.Context, projectID string, since time.Time) (Usage, error) {
+	query := `SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cost_usd), 0)
+		FROM fleet_usage WHERE created_at >= ?`
+	args := []any{toMillis(since)}
+	if projectID != "" {
+		query += ` AND project_id = ?`
+		args = append(args, projectID)
+	}
+	var u Usage
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&u.InputTokens, &u.OutputTokens, &u.CostUSD); err != nil {
+		return Usage{}, fmt.Errorf("fleet: total usage: %w", err)
+	}
+	return u, nil
 }
 
 func (s *Store) updateTask(ctx context.Context, taskID, set string, args ...any) error {

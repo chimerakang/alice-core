@@ -28,13 +28,17 @@ func (s *Store) RegisterProject(ctx context.Context, p Project) (Project, error)
 	if err != nil {
 		return Project{}, fmt.Errorf("fleet: encode verify commands: %w", err)
 	}
+	budget, err := json.Marshal(p.Budget)
+	if err != nil {
+		return Project{}, fmt.Errorf("fleet: encode budget: %w", err)
+	}
 	err = s.inTx(ctx, func(tx querier) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO fleet_projects
 			(id, name, repo_path, remote, default_branch, trust_mode, verify_commands,
-			 max_concurrent, branch_prefix, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 max_concurrent, branch_prefix, budget, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			p.ID, p.Name, p.RepoPath, p.Remote, p.DefaultBranch, string(p.TrustMode), string(commands),
-			p.MaxConcurrent, p.BranchPrefix, toMillis(now), toMillis(now))
+			p.MaxConcurrent, p.BranchPrefix, string(budget), toMillis(now), toMillis(now))
 		if isUniqueViolation(err) {
 			return fmt.Errorf("%w: %s (%s)", ErrProjectExists, p.ID, p.RepoPath)
 		}
@@ -67,18 +71,21 @@ func (s *Store) prepareProject(ctx context.Context, p *Project) error {
 }
 
 const projectColumns = `id, name, repo_path, remote, default_branch, trust_mode, verify_commands,
-	max_concurrent, branch_prefix, created_at, updated_at`
+	max_concurrent, branch_prefix, budget, created_at, updated_at`
 
 func scanProject(row interface{ Scan(...any) error }) (Project, error) {
 	var (
-		p                Project
-		trust, commands  string
-		created, updated int64
+		p                       Project
+		trust, commands, budget string
+		created, updated        int64
 	)
 	err := row.Scan(&p.ID, &p.Name, &p.RepoPath, &p.Remote, &p.DefaultBranch, &trust, &commands,
-		&p.MaxConcurrent, &p.BranchPrefix, &created, &updated)
+		&p.MaxConcurrent, &p.BranchPrefix, &budget, &created, &updated)
 	if err != nil {
 		return Project{}, err
+	}
+	if err := json.Unmarshal([]byte(budget), &p.Budget); err != nil {
+		return Project{}, fmt.Errorf("fleet: decode budget of %s: %w", p.ID, err)
 	}
 	p.TrustMode = TrustMode(trust)
 	if err := json.Unmarshal([]byte(commands), &p.VerifyCommands); err != nil {
@@ -199,13 +206,17 @@ func (s *Store) UpdateProject(ctx context.Context, id string, change func(*Proje
 	if err != nil {
 		return Project{}, fmt.Errorf("fleet: encode verify commands: %w", err)
 	}
+	budget, err := json.Marshal(updated.Budget)
+	if err != nil {
+		return Project{}, fmt.Errorf("fleet: encode budget: %w", err)
+	}
 	err = s.inTx(ctx, func(tx querier) error {
 		res, err := tx.ExecContext(ctx, `UPDATE fleet_projects SET
 			name = ?, repo_path = ?, remote = ?, default_branch = ?, trust_mode = ?,
-			verify_commands = ?, max_concurrent = ?, branch_prefix = ?, updated_at = ?
+			verify_commands = ?, max_concurrent = ?, branch_prefix = ?, budget = ?, updated_at = ?
 			WHERE id = ?`,
 			updated.Name, updated.RepoPath, updated.Remote, updated.DefaultBranch, string(updated.TrustMode),
-			string(commands), updated.MaxConcurrent, updated.BranchPrefix, toMillis(now), id)
+			string(commands), updated.MaxConcurrent, updated.BranchPrefix, string(budget), toMillis(now), id)
 		if isUniqueViolation(err) {
 			return fmt.Errorf("%w: %s", ErrProjectExists, updated.RepoPath)
 		}

@@ -33,7 +33,9 @@ const (
 // wake stays pending until a consumer marks it consumed, so a notification
 // survives a crash between being raised and being delivered.
 type Wake struct {
-	ID        int64
+	ID int64
+	// TaskID and ProjectID say what the wake is about. Both are empty for a
+	// fleet-wide wake, and TaskID is empty for a project-wide one.
 	TaskID    string
 	ProjectID string
 	Kind      WakeKind
@@ -80,6 +82,34 @@ func enqueueWakes(ctx context.Context, tx querier, wakes []newWake, nowMillis in
 		})
 	}
 	return added, nil
+}
+
+// raiseWakes queues wakes outside a watcher pass.
+func (s *Store) raiseWakes(ctx context.Context, wakes ...newWake) ([]Wake, error) {
+	var added []Wake
+	err := s.inTx(ctx, func(tx querier) error {
+		var err error
+		added, err = enqueueWakes(ctx, tx, wakes, toMillis(s.now()))
+		return err
+	})
+	return added, err
+}
+
+// budgetWake is the wake for a reached limit. It is raised once per scope
+// per day, however many tasks run into the limit.
+func budgetWake(over *BudgetError, day string) newWake {
+	w := newWake{kind: WakeOverBudget, detail: over.Reason()}
+	switch over.Scope {
+	case BudgetScopeTask:
+		w.taskID, w.projectID = over.TaskID, over.ProjectID
+		w.dedupeKey = "budget:task:" + day
+	case BudgetScopeProject:
+		w.projectID = over.ProjectID
+		w.dedupeKey = "budget:project:" + over.ProjectID + ":" + day
+	default:
+		w.dedupeKey = "budget:fleet:" + day
+	}
+	return w
 }
 
 // PendingWakes returns unconsumed wakes, oldest first. limit caps the result

@@ -51,6 +51,10 @@ type Runner struct {
 	// StopGrace is how long a stopped agent gets to exit after the interrupt
 	// signal before it is killed. Zero means DefaultStopGrace.
 	StopGrace time.Duration
+	// Budget, when set, is the spending policy. A run is refused with a
+	// *BudgetError once the task, its project's day, or the fleet's day has
+	// reached its limit. The Scheduler and Watcher enforce the same policy.
+	Budget *Budget
 
 	mu   sync.Mutex
 	runs map[string]*activeRun
@@ -106,6 +110,13 @@ type RunOptions struct {
 	// task that already has a session it is a follow-up: an answer to the
 	// agent's question, or more instructions.
 	Instruction string
+	// IgnoreBudget lets this one run start even though a budget limit has
+	// been reached. It is the owner's explicit override.
+	IgnoreBudget bool
+	// OnStart, when set, is called once the agent process is running, with
+	// the task as it stands then (workspace assigned). It must return
+	// promptly: the agent's output is not read until it does.
+	OnStart func(Task)
 }
 
 // RunResult describes a finished run.
@@ -159,6 +170,9 @@ type activeRun struct {
 //   - cancelled, if Cancel was called;
 //   - failed, if the run could not be set up at all.
 //
+// With a Budget set, a run that would start past a limit is refused with a
+// *BudgetError and the task is left exactly as it was.
+//
 // The returned error is non-nil only when the task could not be claimed or
 // its final status could not be stored. An agent that fails is a RunResult,
 // not an error.
@@ -169,6 +183,19 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 	before, err := r.Store.GetTask(ctx, taskID)
 	if err != nil {
 		return RunResult{}, err
+	}
+	if r.Budget != nil && !opts.IgnoreBudget {
+		project, err := r.Store.GetProject(ctx, before.ProjectID)
+		if err != nil {
+			return RunResult{}, err
+		}
+		over, err := r.Budget.view(r.Store).admit(ctx, before, project)
+		if err != nil {
+			return RunResult{}, err
+		}
+		if over != nil {
+			return RunResult{}, over
+		}
 	}
 	fresh := before.Status == StatusQueued
 	reason := "resumed"
@@ -288,6 +315,10 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	_, _ = r.Store.AppendEvent(ctx, task.ID, EventRunStarted, map[string]any{
 		"dir": dir, "resumed": sessionID != "", "pid": cmd.Process.Pid,
 	})
+
+	if opts.OnStart != nil {
+		opts.OnStart(*task)
+	}
 
 	stream := r.consume(ctx, task, stdout)
 	waitErr := cmd.Wait()

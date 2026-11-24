@@ -18,7 +18,8 @@ import (
 //   - turns status changes in the event log into wakes (review ready,
 //     completed, failed, a question, a decision needed);
 //   - looks at every running task and judges its liveness from whether the
-//     Runner has its process and how long ago it last produced output.
+//     Runner has its process and how long ago it last produced output, and
+//     pauses it if a daily budget has been reached (see Runner.Budget).
 //
 // Wakes go to a durable queue; see Store.PendingWakes and Store.ConsumeWake.
 type Watcher struct {
@@ -31,10 +32,6 @@ type Watcher struct {
 	// StuckAfter is how long a running task may produce no output before it
 	// is reported as stuck. Zero means DefaultStuckAfter.
 	StuckAfter time.Duration
-	// MaxTaskCostUSD and MaxTaskTokens, when positive, are per-task budgets.
-	// A running task that exceeds either is reported once.
-	MaxTaskCostUSD float64
-	MaxTaskTokens  int64
 }
 
 // Watcher defaults.
@@ -132,6 +129,8 @@ func (w *Watcher) Scan(ctx context.Context) ([]Wake, error) {
 		return nil, err
 	}
 	now := w.Store.now()
+	budget := w.Runner.Budget.view(w.Store)
+	projects := map[string]Project{}
 	for _, task := range running {
 		liveness, quietSince := w.judge(ctx, task, now)
 		if liveness == LivenessDead {
@@ -156,15 +155,11 @@ func (w *Watcher) Scan(ctx context.Context) ([]Wake, error) {
 				dedupeKey: "quiet-since:" + strconv.FormatInt(toMillis(quietSince), 10),
 			})
 		}
-		if detail, over := w.overBudget(task); over {
-			run := task.CreatedAt
-			if task.StartedAt != nil {
-				run = *task.StartedAt
-			}
-			wakes = append(wakes, newWake{
-				taskID: task.ID, projectID: task.ProjectID, kind: WakeOverBudget, detail: detail,
-				dedupeKey: "run:" + strconv.FormatInt(toMillis(run), 10),
-			})
+		// A daily limit reached while this task was running: pause it. The
+		// agent keeps its session and can carry on when there is budget.
+		if over := w.dailyLimitFor(ctx, budget, task, projects); over != nil {
+			wakes = append(wakes, budgetWake(over, budget.day()))
+			_ = w.Runner.Interrupt(task.ID, over.Reason())
 		}
 	}
 
@@ -234,14 +229,28 @@ func (w *Watcher) judge(ctx context.Context, task Task, now time.Time) (Liveness
 	}
 }
 
-func (w *Watcher) overBudget(task Task) (string, bool) {
-	if w.MaxTaskCostUSD > 0 && task.CostUSD > w.MaxTaskCostUSD {
-		return fmt.Sprintf("cost $%.2f exceeds the task budget of $%.2f", task.CostUSD, w.MaxTaskCostUSD), true
+// dailyLimitFor returns the daily limit, the project's or the fleet's, that
+// the task's scope has reached, or nil. A task's own limit is not checked
+// here: its usage only changes when a run ends, and the next run is refused.
+func (w *Watcher) dailyLimitFor(ctx context.Context, budget *budgetView, task Task, projects map[string]Project) *BudgetError {
+	if budget == nil {
+		return nil
 	}
-	if tokens := task.InputTokens + task.OutputTokens; w.MaxTaskTokens > 0 && tokens > w.MaxTaskTokens {
-		return fmt.Sprintf("%d tokens exceed the task budget of %d", tokens, w.MaxTaskTokens), true
+	project, ok := projects[task.ProjectID]
+	if !ok {
+		var err error
+		if project, err = w.Store.GetProject(ctx, task.ProjectID); err != nil {
+			return nil
+		}
+		projects[task.ProjectID] = project
 	}
-	return "", false
+	if over, err := budget.projectExceeded(ctx, project); err == nil && over != nil {
+		return over
+	}
+	if over, err := budget.fleetExceeded(ctx); err == nil && over != nil {
+		return over
+	}
+	return nil
 }
 
 func (w *Watcher) interval() time.Duration {

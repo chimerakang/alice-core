@@ -85,6 +85,9 @@ type Project struct {
 	MaxConcurrent int
 	// BranchPrefix is prepended to task IDs to form branch names.
 	BranchPrefix string
+	// Budget holds the project's own spending limits. A zero limit means
+	// the fleet-wide default applies.
+	Budget ProjectBudget
 	// Bindings are free-form key/value attachments, e.g. the Telegram topic
 	// a project is bound to. Keys are unique per project.
 	Bindings map[string]string
@@ -171,6 +174,12 @@ func (p *Project) normalize() error {
 
 	if p.BranchPrefix == "" {
 		p.BranchPrefix = DefaultBranchPrefix
+	}
+
+	for name, l := range map[string]Limit{"task": p.Budget.Task, "daily": p.Budget.Daily} {
+		if l.CostUSD < 0 || l.Tokens < 0 {
+			return fmt.Errorf("%w: the %s budget cannot be negative", ErrInvalidProject, name)
+		}
 	}
 
 	commands := make([]string, 0, len(p.VerifyCommands))

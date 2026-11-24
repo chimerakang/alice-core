@@ -160,6 +160,19 @@ var schema = []string{
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	)`,
+	// Every increment of usage, so spending can be totalled per day. Task
+	// rows hold only running totals.
+	`CREATE TABLE IF NOT EXISTS fleet_usage (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id       TEXT NOT NULL,
+		project_id    TEXT NOT NULL,
+		input_tokens  INTEGER NOT NULL,
+		output_tokens INTEGER NOT NULL,
+		cost_usd      REAL NOT NULL,
+		created_at    INTEGER NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_fleet_usage_time
+		ON fleet_usage (created_at, project_id)`,
 	// The event log is history: once written, a row is never changed or removed.
 	`CREATE TRIGGER IF NOT EXISTS fleet_task_events_no_update
 		BEFORE UPDATE ON fleet_task_events
@@ -175,6 +188,7 @@ var addedColumns = []struct{ table, column, definition string }{
 	{"fleet_tasks", "liveness", "TEXT NOT NULL DEFAULT 'unknown'"},
 	{"fleet_tasks", "pr_url", "TEXT NOT NULL DEFAULT ''"},
 	{"fleet_tasks", "pr_number", "INTEGER NOT NULL DEFAULT 0"},
+	{"fleet_projects", "budget", "TEXT NOT NULL DEFAULT '{}'"},
 }
 
 func (s *Store) migrate() error {

@@ -217,6 +217,19 @@ A verified ship task is then delivered as far as its trust mode allows. Set `Sch
 
 History is never rewritten: a plain push, then a fast-forward or a merge commit. A task that changed nothing, or whose changes include a secret file (`.env`, `*.pem`, `*.key`, SSH keys), is stopped and handed to the owner instead.
 
+`Runner.Budget` sets spending limits on tokens and cost in three scopes: one task's lifetime total, one project's day, and the whole fleet's day. A project can carry its own `Budget` to override the first two. Usage is known when an agent's turn ends, so a limit takes effect at the next boundary: no new run starts past it (`RunOptions.IgnoreBudget` is the owner's override), queued tasks wait, and when a daily limit is reached the runs already going are interrupted with their sessions kept.
+
+`fleet.IssueTracker` dispatches tasks from GitHub issues and keeps each issue informed:
+
+```go
+tracker := &fleet.IssueTracker{Store: store}
+sched.Issues = tracker
+
+task, err := tracker.Dispatch(ctx, project.ID, 42, fleet.DispatchOptions{}) // goal built from the issue and its open checklist
+```
+
+The issue gets a comment when work starts and when it ends. A checklist item is ticked only when the agent declared it complete *and* the task passed verification with at least one real check; neither alone is enough.
+
 `fleet.Watcher` supervises without calling a model. It turns status changes into wakes (review ready, completed, failed, question, decision needed), reports running tasks that have gone quiet or over budget, and keeps each task's `Liveness` honest: with no evidence either way it is `unknown`, never `idle`. Wakes are durable: read them with `Store.PendingWakes` and acknowledge each with `Store.ConsumeWake` once it has been acted on.
 
 `Scheduler.Run` begins with `Runner.Recover`, which reconciles stored state with reality after a crash or restart: a task stored as running with no process behind it is marked dead and moved to `needs_decision` with its session intact, an agent process that outlived the host is stopped, and checkouts that no unfinished task owns are reported (never deleted). Set `Scheduler.OnRecovery` to receive the report.
