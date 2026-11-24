@@ -250,6 +250,7 @@ cmd.Approve(ctx, me, task.ID)  // land a review_ready task
 cmd.Merge(ctx, me, task.ID)    // also merges the PR of a finished direct-pr task
 cmd.Cancel(ctx, me, task.ID, "")
 cmd.Retry(ctx, me, task.ID)
+cmd.Pass(ctx, me, task.ID)     // wave a needs_decision task through to review
 cmd.Discard(ctx, me, task.ID)  // cancel and remove the checkout; the branch is kept
 
 diff, err := cmd.TaskDiff(ctx, task.ID)                     // committed and uncommitted work
