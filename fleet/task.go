@@ -275,6 +275,10 @@ type StatusChange struct {
 	From   Status `json:"from"`
 	To     Status `json:"to"`
 	Reason string `json:"reason,omitempty"`
+	// Requested marks a change that came from a stop someone asked for: a
+	// cancel, an interrupt, or the fleet pausing a task over its budget.
+	// Whoever asked already knows, so no wake is raised for it.
+	Requested bool `json:"requested,omitempty"`
 }
 
 // TaskOrder selects how ListTasks sorts.

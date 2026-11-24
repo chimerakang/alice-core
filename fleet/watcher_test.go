@@ -433,3 +433,52 @@ func TestWakeFor(t *testing.T) {
 		}
 	}
 }
+
+// An agent that is slow to stop: the stop request and the status change it
+// leads to are seen by different watcher passes. The change must still not
+// be reported to the person who asked for it.
+func TestWatcher_RequestedStopSeenAcrossPasses(t *testing.T) {
+	e := newRunnerEnv(t)
+	e.runner.StopGrace = 600 * time.Millisecond
+	w := e.watcher()
+	e.script(lineInit, "#ignore-int", "#sleep 30")
+	task := e.task(NewTask{})
+	out := e.runAsync(ctx, task.ID)
+	e.waitForStart(task.ID)
+
+	if err := e.runner.Interrupt(task.ID, "wrong approach"); err != nil {
+		t.Fatal(err)
+	}
+	// A pass while the agent is still shutting down: it reads the stop
+	// request and nothing else.
+	if wakes := e.scan(w); len(wakes) != 0 {
+		t.Fatalf("a pass during shutdown raised %+v", summarize(wakes))
+	}
+	res := awaitRun(t, out)
+	if res.Task.Status != StatusNeedsDecision {
+		t.Fatalf("task = %s", res.Task.Status)
+	}
+	// The pass that finally sees the status change.
+	if wakes := e.scan(w); len(wakes) != 0 {
+		t.Fatalf("the owner's own interrupt was reported back to them: %+v", summarize(wakes))
+	}
+
+	changes := e.eventPayloads(task.ID, EventStatus)
+	last := changes[len(changes)-1]
+	if last["to"] != string(StatusNeedsDecision) || last["requested"] != true {
+		t.Errorf("the status change must be marked as requested: %v", last)
+	}
+}
+
+// A task that stops by itself is not marked as requested.
+func TestStatusChange_RequestedOnlyForAskedStops(t *testing.T) {
+	e := newRunnerEnv(t)
+	e.script(lineInit, lineResultAsk)
+	task := e.task(NewTask{})
+	e.run(task.ID, RunOptions{})
+	for _, change := range e.eventPayloads(task.ID, EventStatus) {
+		if _, marked := change["requested"]; marked {
+			t.Errorf("an unprompted change was marked as requested: %v", change)
+		}
+	}
+}

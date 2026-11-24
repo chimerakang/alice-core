@@ -92,36 +92,33 @@ func (w *Watcher) Scan(ctx context.Context) ([]Wake, error) {
 		return t, true
 	}
 
-	// A stop the owner asked for is not news to the owner. Remember which
-	// tasks have one pending, so the status change it causes is not reported.
-	ownerStopped := map[string]bool{}
 	for _, ev := range events {
 		cursor = ev.ID
-		switch ev.Type {
-		case EventRunStop:
-			ownerStopped[ev.TaskID] = true
-		case EventStatus:
-			var change StatusChange
-			if json.Unmarshal(ev.Payload, &change) != nil {
-				continue
-			}
-			if change.To == StatusRunning {
-				ownerStopped[ev.TaskID] = false
-				continue
-			}
-			kind, ok := wakeFor(change)
-			if !ok || ownerStopped[ev.TaskID] {
-				continue
-			}
-			task, found := loadTask(ev.TaskID)
-			if !found {
-				continue
-			}
-			wakes = append(wakes, newWake{
-				taskID: task.ID, projectID: task.ProjectID, kind: kind, detail: change.Reason,
-				dedupeKey: "event:" + strconv.FormatInt(ev.ID, 10),
-			})
+		if ev.Type != EventStatus {
+			continue
 		}
+		var change StatusChange
+		if json.Unmarshal(ev.Payload, &change) != nil {
+			continue
+		}
+		// A stop someone asked for is not news to them. The mark is on the
+		// status change itself, so it holds however the stop request and the
+		// agent's exit happen to be ordered, and across passes.
+		if change.Requested {
+			continue
+		}
+		kind, ok := wakeFor(change)
+		if !ok {
+			continue
+		}
+		task, found := loadTask(ev.TaskID)
+		if !found {
+			continue
+		}
+		wakes = append(wakes, newWake{
+			taskID: task.ID, projectID: task.ProjectID, kind: kind, detail: change.Reason,
+			dedupeKey: "event:" + strconv.FormatInt(ev.ID, 10),
+		})
 	}
 
 	running, err := w.Store.ListTasks(ctx, TaskFilter{Statuses: []Status{StatusRunning}})

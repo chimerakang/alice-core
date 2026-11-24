@@ -207,6 +207,12 @@ func (f TaskFilter) where() (string, []any) {
 // ErrInvalidTransition) and leaves the task untouched. If another caller
 // changed the task's status first, ErrConflict is returned.
 func (s *Store) Transition(ctx context.Context, taskID string, to Status, reason string) (Task, error) {
+	return s.transition(ctx, taskID, to, reason, false)
+}
+
+// transition is Transition with the change optionally marked as requested:
+// the result of a stop someone asked for, which therefore needs no wake.
+func (s *Store) transition(ctx context.Context, taskID string, to Status, reason string, requested bool) (Task, error) {
 	var out Task
 	err := s.inTx(ctx, func(tx querier) error {
 		current, err := getTask(ctx, tx, taskID)
@@ -247,7 +253,7 @@ func (s *Store) Transition(ctx context.Context, taskID string, to Status, reason
 			return fmt.Errorf("%w: %s", ErrConflict, taskID)
 		}
 		if _, err := appendEvent(ctx, tx, taskID, EventStatus,
-			StatusChange{From: current.Status, To: to, Reason: reason}, now); err != nil {
+			StatusChange{From: current.Status, To: to, Reason: reason, Requested: requested}, now); err != nil {
 			return err
 		}
 		out, err = getTask(ctx, tx, taskID)
