@@ -123,6 +123,8 @@ type DispatchRequest struct {
 	Shape    Shape
 	Model    string
 	Priority int
+	// Budget, when set, caps this task's total usage. See Task.Budget.
+	Budget Limit
 }
 
 // Dispatch queues a task and nudges the scheduler to look at it.
@@ -137,10 +139,10 @@ func (c *Commander) Dispatch(ctx context.Context, actor Actor, req DispatchReque
 	)
 	if req.Issue > 0 {
 		detail = fmt.Sprintf("issue #%d", req.Issue)
-		task, err = c.issues().Dispatch(ctx, req.ProjectID, req.Issue, DispatchOptions{Shape: req.Shape, Model: req.Model, Priority: req.Priority})
+		task, err = c.issues().Dispatch(ctx, req.ProjectID, req.Issue, DispatchOptions{Shape: req.Shape, Model: req.Model, Priority: req.Priority, Budget: req.Budget})
 	} else {
 		task, err = c.Store.CreateTask(ctx, NewTask{
-			ProjectID: req.ProjectID, Goal: req.Goal, Shape: req.Shape, Model: req.Model, Priority: req.Priority,
+			ProjectID: req.ProjectID, Goal: req.Goal, Shape: req.Shape, Model: req.Model, Priority: req.Priority, Budget: req.Budget,
 		})
 	}
 	if err == nil && c.Scheduler != nil {

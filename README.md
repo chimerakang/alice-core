@@ -217,7 +217,7 @@ A verified ship task is then delivered as far as its trust mode allows. Set `Sch
 
 History is never rewritten: a plain push, then a fast-forward or a merge commit. A task that changed nothing, or whose changes include a secret file (`.env`, `*.pem`, `*.key`, SSH keys), is stopped and handed to the owner instead.
 
-`Runner.Budget` sets spending limits on tokens and cost in three scopes: one task's lifetime total, one project's day, and the whole fleet's day. A project can carry its own `Budget` to override the first two. Usage is known when an agent's turn ends, so a limit takes effect at the next boundary: no new run starts past it (`RunOptions.IgnoreBudget` is the owner's override), queued tasks wait, and when a daily limit is reached the runs already going are interrupted with their sessions kept.
+`Runner.Budget` sets spending limits on tokens and cost in three scopes: one task's lifetime total, one project's day, and the whole fleet's day. A project can carry its own `Budget` to override the first two, and a single task can be dispatched with its own total (`DispatchRequest.Budget`), which replaces the per-task limit for that task. Limits are enforced only when `Runner.Budget` is set; an empty `&fleet.Budget{}` is enough for per-task and per-project ones. Usage is known when an agent's turn ends, so a limit takes effect at the next boundary: no new run starts past it (`RunOptions.IgnoreBudget` is the owner's override), queued tasks wait, and when a daily limit is reached the runs already going are interrupted with their sessions kept.
 
 `fleet.IssueTracker` dispatches tasks from GitHub issues and keeps each issue informed:
 

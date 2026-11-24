@@ -191,7 +191,7 @@ func (v *budgetView) taskExceeded(task Task, project Project) *BudgetError {
 	if v == nil {
 		return nil
 	}
-	limit := project.Budget.Task.or(v.budget.Task)
+	limit := task.Budget.or(project.Budget.Task.or(v.budget.Task))
 	used := Usage{InputTokens: task.InputTokens, OutputTokens: task.OutputTokens, CostUSD: task.CostUSD}
 	if detail, over := limit.exceededBy(used); over {
 		return &BudgetError{Scope: BudgetScopeTask, ProjectID: task.ProjectID, TaskID: task.ID, Detail: detail}

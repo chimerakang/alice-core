@@ -226,6 +226,7 @@ var addedColumns = []struct{ table, column, definition string }{
 	{"fleet_tasks", "pr_url", "TEXT NOT NULL DEFAULT ''"},
 	{"fleet_tasks", "pr_number", "INTEGER NOT NULL DEFAULT 0"},
 	{"fleet_projects", "budget", "TEXT NOT NULL DEFAULT '{}'"},
+	{"fleet_tasks", "budget", "TEXT NOT NULL DEFAULT '{}'"},
 }
 
 func (s *Store) migrate() error {

@@ -477,3 +477,65 @@ func TestStore_AddsBudgetToAnOlderDatabase(t *testing.T) {
 		t.Fatalf("writing the new column: %v", err)
 	}
 }
+
+// A task dispatched with its own budget is held to that, in place of the
+// project's and the fleet's per-task limit.
+func TestRun_TaskOwnBudgetReplacesTheDefault(t *testing.T) {
+	e := newRunnerEnv(t)
+	e.runner.Budget = &Budget{Task: Limit{CostUSD: 1.00}}
+	e.script(lineInit, lineResultOK)
+
+	// Looser than the default: runs although the default is used up.
+	generous := e.task(NewTask{Budget: Limit{CostUSD: 5.00}})
+	if got, _ := e.store.GetTask(ctx, generous.ID); got.Budget != (Limit{CostUSD: 5.00}) {
+		t.Fatalf("stored budget = %+v", got.Budget)
+	}
+	if err := e.store.AddUsage(ctx, generous.ID, Usage{CostUSD: 1.20}); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := e.runner.Run(ctx, generous.ID, RunOptions{}); err != nil || res.Outcome != OutcomeFinished {
+		t.Fatalf("within its own budget: %+v, %v", res, err)
+	}
+
+	// Tighter than the default: refused although the default has room.
+	tight := e.task(NewTask{Budget: Limit{CostUSD: 0.50}})
+	if err := e.store.AddUsage(ctx, tight.ID, Usage{CostUSD: 0.60}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.runner.Run(ctx, tight.ID, RunOptions{})
+	var over *BudgetError
+	if !errors.As(err, &over) || over.Scope != BudgetScopeTask || over.Detail != "$0.60 spent of a $0.50 limit" {
+		t.Fatalf("err = %v (%+v), want the task's own limit", err, over)
+	}
+}
+
+// An empty fleet Budget is enough for a task's own limit to be enforced.
+func TestRun_TaskOwnBudgetWithAnEmptyFleetBudget(t *testing.T) {
+	e := newRunnerEnv(t)
+	e.runner.Budget = &Budget{}
+	e.script(lineInit, lineResultOK)
+	task := e.task(NewTask{Budget: Limit{Tokens: 100}})
+	if err := e.store.AddUsage(ctx, task.ID, Usage{InputTokens: 80, OutputTokens: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.runner.Run(ctx, task.ID, RunOptions{}); !errors.Is(err, ErrOverBudget) {
+		t.Fatalf("err = %v, want ErrOverBudget", err)
+	}
+}
+
+func TestCreateTask_RejectsANegativeBudget(t *testing.T) {
+	e := newRunnerEnv(t)
+	_, err := e.store.CreateTask(ctx, NewTask{ProjectID: "app", Goal: "x", Budget: Limit{CostUSD: -1}})
+	if !errors.Is(err, ErrInvalidTask) {
+		t.Fatalf("err = %v, want ErrInvalidTask", err)
+	}
+}
+
+func TestCommander_DispatchCarriesTheBudget(t *testing.T) {
+	e := newRunnerEnv(t)
+	cmd := &Commander{Store: e.store}
+	task, err := cmd.Dispatch(ctx, Actor{ID: "ck"}, DispatchRequest{ProjectID: "app", Goal: "x", Budget: Limit{CostUSD: 2}})
+	if err != nil || task.Budget != (Limit{CostUSD: 2}) {
+		t.Fatalf("task = %+v, %v", task.Budget, err)
+	}
+}

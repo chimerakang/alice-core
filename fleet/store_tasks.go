@@ -20,6 +20,7 @@ func (s *Store) CreateTask(ctx context.Context, in NewTask) (Task, error) {
 		Source:    in.Source,
 		Model:     strings.TrimSpace(in.Model),
 		Priority:  in.Priority,
+		Budget:    in.Budget,
 		Status:    StatusQueued,
 		Liveness:  LivenessUnknown,
 	}
@@ -50,6 +51,13 @@ func (s *Store) CreateTask(ctx context.Context, in NewTask) (Task, error) {
 	if t.ProjectID == "" {
 		return Task{}, fmt.Errorf("%w: project is required", ErrInvalidTask)
 	}
+	if t.Budget.CostUSD < 0 || t.Budget.Tokens < 0 {
+		return Task{}, fmt.Errorf("%w: a budget cannot be negative", ErrInvalidTask)
+	}
+	budget, err := json.Marshal(t.Budget)
+	if err != nil {
+		return Task{}, fmt.Errorf("fleet: encode budget: %w", err)
+	}
 
 	now := s.now()
 	t.CreatedAt, t.UpdatedAt = now.UTC(), now.UTC()
@@ -73,10 +81,10 @@ func (s *Store) CreateTask(ctx context.Context, in NewTask) (Task, error) {
 			t.TrustMode = TrustMode(trust)
 			_, err = tx.ExecContext(ctx, `INSERT INTO fleet_tasks
 				(id, project_id, shape, goal, source_kind, issue_number, trust_mode, model, priority,
-				 status, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 status, created_at, updated_at, budget)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				t.ID, t.ProjectID, string(t.Shape), t.Goal, string(t.Source.Kind), t.Source.IssueNumber,
-				trust, t.Model, t.Priority, string(t.Status), toMillis(now), toMillis(now))
+				trust, t.Model, t.Priority, string(t.Status), toMillis(now), toMillis(now), string(budget))
 			if err != nil {
 				return err
 			}
@@ -98,19 +106,19 @@ func (s *Store) CreateTask(ctx context.Context, in NewTask) (Task, error) {
 
 const taskColumns = `id, project_id, shape, goal, source_kind, issue_number, trust_mode, model, priority,
 	status, status_reason, branch, worktree_path, session_id,
-	input_tokens, output_tokens, cost_usd, created_at, updated_at, started_at, finished_at, last_activity_at, liveness, pr_url, pr_number`
+	input_tokens, output_tokens, cost_usd, created_at, updated_at, started_at, finished_at, last_activity_at, liveness, pr_url, pr_number, budget`
 
 func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 	var (
 		t                          Task
 		shape, kind, trust, status string
-		liveness                   string
+		liveness, budget           string
 		created, updated           int64
 		started, finished, active  sql.NullInt64
 	)
 	err := row.Scan(&t.ID, &t.ProjectID, &shape, &t.Goal, &kind, &t.Source.IssueNumber, &trust, &t.Model, &t.Priority,
 		&status, &t.StatusReason, &t.Branch, &t.WorktreePath, &t.SessionID,
-		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &created, &updated, &started, &finished, &active, &liveness, &t.PRURL, &t.PRNumber)
+		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &created, &updated, &started, &finished, &active, &liveness, &t.PRURL, &t.PRNumber, &budget)
 	if err != nil {
 		return Task{}, err
 	}
@@ -119,6 +127,9 @@ func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 	t.StartedAt, t.FinishedAt = fromNullMillis(started), fromNullMillis(finished)
 	t.LastActivityAt = fromNullMillis(active)
 	t.Liveness = Liveness(liveness)
+	if err := json.Unmarshal([]byte(budget), &t.Budget); err != nil {
+		return Task{}, fmt.Errorf("fleet: decode budget of %s: %w", t.ID, err)
+	}
 	return t, nil
 }
 
