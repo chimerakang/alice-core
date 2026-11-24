@@ -230,6 +230,36 @@ func (d *Deliverer) Approve(ctx context.Context, taskID, approver string) (Task,
 	return d.Store.Transition(recCtx, taskID, StatusDone, fmt.Sprintf("approved by %s: %s", approver, landed))
 }
 
+// Merge lands a task's work on the owner's say-so, wherever the task stands:
+//
+//   - a task that is review_ready is approved, exactly as Approve does;
+//   - a task already done in direct-pr mode has its pull request merged, for
+//     the owner who would rather say "merge it" than open the forge.
+//
+// Anything else has nothing to merge and returns ErrNothingToApprove.
+func (d *Deliverer) Merge(ctx context.Context, taskID, approver string) (Task, error) {
+	if d.Store == nil {
+		return Task{}, errors.New("fleet: Deliverer.Store is required")
+	}
+	task, err := d.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return Task{}, err
+	}
+	if task.Status == StatusReviewReady {
+		return d.Approve(ctx, taskID, approver)
+	}
+	if task.Status != StatusDone || task.PRNumber == 0 {
+		return Task{}, fmt.Errorf("%w: task %s is %s and has no open pull request to merge", ErrNothingToApprove, taskID, task.Status)
+	}
+	if err := d.forge().MergePullRequest(ctx, task.WorktreePath, task.PRNumber); err != nil {
+		return Task{}, err
+	}
+	approver = firstNonEmpty(strings.TrimSpace(approver), "owner")
+	_, _ = d.Store.AppendEvent(context.WithoutCancel(ctx), taskID, EventDeliveryApproved,
+		map[string]any{"approver": approver, "landed": "merged " + task.PRURL})
+	return d.Store.GetTask(ctx, taskID)
+}
+
 // fastForward moves the project's default branch to branch without creating
 // a commit, and only if nothing would be lost.
 func fastForward(ctx context.Context, project Project, branch string) error {

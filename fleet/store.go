@@ -173,6 +173,21 @@ var schema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_fleet_usage_time
 		ON fleet_usage (created_at, project_id)`,
+	// Who asked for what, and how it went.
+	`CREATE TABLE IF NOT EXISTS fleet_audit (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		actor      TEXT NOT NULL,
+		via        TEXT NOT NULL DEFAULT '',
+		command    TEXT NOT NULL,
+		project_id TEXT NOT NULL DEFAULT '',
+		task_id    TEXT NOT NULL DEFAULT '',
+		detail     TEXT NOT NULL DEFAULT '',
+		ok         INTEGER NOT NULL,
+		error      TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_fleet_audit_task ON fleet_audit (task_id, id)`,
+	`CREATE INDEX IF NOT EXISTS idx_fleet_audit_project ON fleet_audit (project_id, id)`,
 	// The event log is history: once written, a row is never changed or removed.
 	`CREATE TRIGGER IF NOT EXISTS fleet_task_events_no_update
 		BEFORE UPDATE ON fleet_task_events

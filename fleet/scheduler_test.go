@@ -53,6 +53,23 @@ func (e *runnerEnv) runUntilIdle(s *Scheduler) {
 	}
 }
 
+// startScheduler runs the scheduler in the background and returns a function
+// that stops it and waits for it to finish.
+func (e *runnerEnv) startScheduler(s *Scheduler) (stop func()) {
+	e.t.Helper()
+	c, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- s.Run(c) }()
+	return func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+			e.t.Error("Scheduler.Run did not return after its context was cancelled")
+		}
+	}
+}
+
 func (e *runnerEnv) waitUntil(what string, cond func() bool) {
 	e.t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
