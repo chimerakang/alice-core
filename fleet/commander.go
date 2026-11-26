@@ -431,6 +431,7 @@ func (c *Commander) TaskDiff(ctx context.Context, taskID string) (TaskDiff, erro
 	if !live {
 		dir, head = project.RepoPath, "refs/heads/"+task.Branch
 	}
+	project = task.deliveryProject(project)
 	base, err := runGit(ctx, dir, "merge-base", baseRef(ctx, project), head)
 	if err != nil {
 		return TaskDiff{}, fmt.Errorf("fleet: find where %s left %s: %s", task.Branch, project.DefaultBranch, orUnknown(base))

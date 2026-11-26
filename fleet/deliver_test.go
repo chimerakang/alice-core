@@ -135,6 +135,18 @@ func TestApprove_LocalOnlyFastForwards(t *testing.T) {
 	before := gitT(t, e.repo, "rev-parse", "main")
 	head := gitT(t, task.WorktreePath, "rev-parse", "HEAD")
 
+	// An existing database may have a task already awaiting approval.
+	if _, err := e.store.db.ExecContext(ctx, "UPDATE fleet_tasks SET target_branch = '' WHERE id = ?", task.ID); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, e.repo, "branch", "develop")
+	if _, err := e.store.UpdateProject(ctx, "web", func(p *Project) error {
+		p.DefaultBranch = "develop"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	done, err := e.deliverer.Approve(ctx, task.ID, "ck")
 	if err != nil {
 		t.Fatalf("Approve: %v", err)
@@ -144,6 +156,9 @@ func TestApprove_LocalOnlyFastForwards(t *testing.T) {
 	}
 	if got := gitT(t, e.repo, "rev-parse", "main"); got != head {
 		t.Fatalf("main = %s, want the task's head %s", got, head)
+	}
+	if got := gitT(t, e.repo, "rev-parse", "develop"); got != before {
+		t.Fatalf("develop = %s, want unchanged tip %s", got, before)
 	}
 	// main is checked out in the main working tree, so its files moved too.
 	if _, err := os.Stat(filepath.Join(e.repo, "feature.txt")); err != nil {
@@ -629,5 +644,48 @@ exit "${FAKE_GH_EXIT:-0}"
 	}
 	if _, _, err := forge.OpenPullRequest(ctx, t.TempDir(), PullRequest{Branch: "b", Base: "main"}); err == nil {
 		t.Error("a failing gh must be an error")
+	}
+}
+
+func TestShipKeepsTargetWhenProjectChanges(t *testing.T) {
+	e := newDeliveryEnv(t, TrustDirectPR)
+	old := e.reviewReady("Old ship")
+	if old.TargetBranch != "main" {
+		t.Fatalf("old target = %q, want main", old.TargetBranch)
+	}
+
+	gitT(t, e.repo, "switch", "-c", "develop")
+	if err := os.WriteFile(filepath.Join(e.repo, "develop-only.txt"), []byte("new base"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, e.repo, "add", "develop-only.txt")
+	gitT(t, e.repo, "commit", "-m", "Advance develop")
+	// Make develop contain the workspace commit as well. Using develop for
+	// the old diff or delivery would now hide the task's change.
+	gitT(t, old.WorktreePath, "add", "feature.txt")
+	gitT(t, old.WorktreePath, "commit", "-m", "Old task change")
+	gitT(t, e.repo, "merge", "--no-ff", "-m", "Integrate old change on develop", old.Branch)
+
+	if _, err := e.store.UpdateProject(ctx, "web", func(p *Project) error {
+		p.DefaultBranch = "develop"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	diff, err := (&Commander{Store: e.store}).TaskDiff(ctx, old.ID)
+	if err != nil || !strings.Contains(diff.Patch, "feature.txt") {
+		t.Fatalf("old diff = %+v, err = %v", diff, err)
+	}
+	e.deliver(old.ID)
+	if len(e.forge.opened) != 1 || e.forge.opened[0].Base != "main" {
+		t.Fatalf("old pull request = %+v, want base main", e.forge.opened)
+	}
+
+	fresh := e.reviewReady("New ship")
+	if fresh.TargetBranch != "develop" {
+		t.Fatalf("new target = %q, want develop", fresh.TargetBranch)
+	}
+	if head := gitT(t, fresh.WorktreePath, "rev-parse", "HEAD"); head != gitT(t, e.repo, "rev-parse", "develop") {
+		t.Fatalf("new worktree head = %s, want develop", head)
 	}
 }

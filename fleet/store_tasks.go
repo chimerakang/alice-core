@@ -105,7 +105,7 @@ func (s *Store) CreateTask(ctx context.Context, in NewTask) (Task, error) {
 }
 
 const taskColumns = `id, project_id, shape, goal, source_kind, issue_number, trust_mode, model, priority,
-	status, status_reason, branch, worktree_path, session_id,
+	status, status_reason, branch, worktree_path, session_id, target_branch,
 	input_tokens, output_tokens, cost_usd, created_at, updated_at, started_at, finished_at, last_activity_at, liveness, pr_url, pr_number, budget`
 
 func scanTask(row interface{ Scan(...any) error }) (Task, error) {
@@ -117,7 +117,7 @@ func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 		started, finished, active  sql.NullInt64
 	)
 	err := row.Scan(&t.ID, &t.ProjectID, &shape, &t.Goal, &kind, &t.Source.IssueNumber, &trust, &t.Model, &t.Priority,
-		&status, &t.StatusReason, &t.Branch, &t.WorktreePath, &t.SessionID,
+		&status, &t.StatusReason, &t.Branch, &t.WorktreePath, &t.SessionID, &t.TargetBranch,
 		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &created, &updated, &started, &finished, &active, &liveness, &t.PRURL, &t.PRNumber, &budget)
 	if err != nil {
 		return Task{}, err
@@ -253,9 +253,13 @@ func (s *Store) transition(ctx context.Context, taskID string, to Status, reason
 		}
 		args = append(args, taskID, string(current.Status))
 
+		targetBranch := "target_branch"
+		if to == StatusRunning {
+			targetBranch = `COALESCE(NULLIF(target_branch, ''), (SELECT default_branch FROM fleet_projects WHERE id = fleet_tasks.project_id), '')`
+		}
 		res, err := tx.ExecContext(ctx, `UPDATE fleet_tasks SET
 			status = ?, status_reason = ?, updated_at = ?,
-			started_at = `+started+`, finished_at = `+finished+`
+			started_at = `+started+`, finished_at = `+finished+`, target_branch = `+targetBranch+`
 			WHERE id = ? AND status = ?`, args...)
 		if err != nil {
 			return fmt.Errorf("fleet: update task status: %w", err)

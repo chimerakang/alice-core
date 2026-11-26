@@ -279,7 +279,7 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	if task.Shape == ShapeScout && strings.TrimSpace(r.ReportRoot) == "" {
 		return runEnd{}, errors.New("fleet: Runner.ReportRoot is required to run scout tasks")
 	}
-	dir, err := r.prepareWorkspace(ctx, project, task)
+	dir, err := r.prepareWorkspace(ctx, task.deliveryProject(project), task)
 	if err != nil {
 		return runEnd{}, fmt.Errorf("prepare workspace: %w", err)
 	}
