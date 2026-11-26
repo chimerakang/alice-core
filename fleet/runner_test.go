@@ -20,11 +20,17 @@ import (
 // fakeAgentScript stands in for the claude CLI. It records how it was
 // invoked, then plays back "$FAKE_AGENT_DIR/script" line by line: plain lines
 // go to stdout, lines starting with # are directives.
+//
+// Agents run side by side under the scheduler, so taking the next invocation
+// number is done under a lock: without it two of them read the same count,
+// and one invocation goes unrecorded.
 const fakeAgentScript = `#!/bin/sh
 D="$FAKE_AGENT_DIR"
+until mkdir "$D/count.lock" 2>/dev/null; do sleep 0.01; done
 n=$(cat "$D/count" 2>/dev/null || echo 0)
 n=$((n+1))
 echo "$n" > "$D/count"
+rmdir "$D/count.lock"
 : > "$D/args.$n"
 for a in "$@"; do printf '%s\n' "$a" >> "$D/args.$n"; printf '\036\n' >> "$D/args.$n"; done
 pwd -P > "$D/cwd.$n"
