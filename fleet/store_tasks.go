@@ -224,11 +224,19 @@ func (s *Store) Transition(ctx context.Context, taskID string, to Status, reason
 // transition is Transition with the change optionally marked as requested:
 // the result of a stop someone asked for, which therefore needs no wake.
 func (s *Store) transition(ctx context.Context, taskID string, to Status, reason string, requested bool) (Task, error) {
+	return s.transitionWithStartupResume(ctx, taskID, to, reason, requested, nil)
+}
+
+func (s *Store) transitionWithStartupResume(ctx context.Context, taskID string, to Status, reason string, requested bool, resume *startupResume) (Task, error) {
 	var out Task
 	err := s.inTx(ctx, func(tx querier) error {
 		current, err := getTask(ctx, tx, taskID)
 		if err != nil {
 			return err
+		}
+		if resume != nil && (current.Status != StatusNeedsDecision || !current.UpdatedAt.Equal(resume.task.UpdatedAt) ||
+			current.StatusReason != resume.task.StatusReason || current.SessionID != resume.task.SessionID) {
+			return fmt.Errorf("%w: task %s changed since startup recovery", ErrConflict, taskID)
 		}
 		if !to.Valid() || !CanTransition(current.Status, to) {
 			return &TransitionError{TaskID: taskID, From: current.Status, To: to}
@@ -270,6 +278,12 @@ func (s *Store) transition(ctx context.Context, taskID string, to Status, reason
 		if _, err := appendEvent(ctx, tx, taskID, EventStatus,
 			StatusChange{From: current.Status, To: to, Reason: reason, Requested: requested}, now); err != nil {
 			return err
+		}
+		if resume != nil {
+			if _, err := appendEvent(ctx, tx, taskID, EventStartupResumed,
+				map[string]any{"attempt": resume.attempt, "reason": current.StatusReason, "actor": "system"}, now); err != nil {
+				return err
+			}
 		}
 		out, err = getTask(ctx, tx, taskID)
 		return err

@@ -156,7 +156,7 @@ func (v *Verifier) decide(recCtx, runCtx context.Context, task Task, report veri
 	}
 
 	if runCtx.Err() != nil {
-		return StatusNeedsDecision, "verification interrupted: " + runCtx.Err().Error()
+		return StatusNeedsDecision, verificationInterruptedPrefix + runCtx.Err().Error()
 	}
 	if task.Shape == ShapeScout {
 		// A scout that broke its rules is not sent back to try again.

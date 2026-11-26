@@ -112,14 +112,14 @@ func (r *Runner) Recover(ctx context.Context) (RecoveryReport, error) {
 func (r *Runner) recoverTask(ctx context.Context, task Task) (RecoveredTask, bool, error) {
 	out := RecoveredTask{From: task.Status}
 
-	reason := "agent process is gone: it died or the host restarted while it was running"
+	reason := startupLostAgent
 	if task.Status == StatusVerifying {
-		reason = "verification was cut off by a host restart"
+		reason = startupLostVerification
 	}
 	if pid := r.leftoverAgent(ctx, task); pid != 0 {
 		signalGroup(pid, syscall.SIGKILL)
 		out.KilledPID = pid
-		reason = "agent was left running without supervision by a host restart and has been stopped"
+		reason = startupLeftoverAgent
 	}
 
 	if err := r.Store.SetLiveness(ctx, task.ID, LivenessDead); err != nil {

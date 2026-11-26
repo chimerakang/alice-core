@@ -501,3 +501,71 @@ func TestScheduler_ScoutEndToEnd(t *testing.T) {
 		t.Fatalf("report = %q, %v", body, err)
 	}
 }
+
+func TestSchedulerStartupResumesOnlyServiceStops(t *testing.T) {
+	e := newRunnerEnv(t)
+	e.script(timedRun...)
+	makeStopped := func(reason string, requested bool) Task {
+		t.Helper()
+		task := e.task(NewTask{ProjectID: "app", Goal: "Resume me"})
+		if _, err := e.store.Transition(ctx, task.ID, StatusRunning, "old run"); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.store.SetSession(ctx, task.ID, "existing-session"); err != nil {
+			t.Fatal(err)
+		}
+		task, err := e.store.transition(ctx, task.ID, StatusNeedsDecision, reason, requested)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	resumable := makeStopped(runnerStoppedPrefix+"context canceled", false)
+	second := makeStopped(startupLostAgent, false)
+	operatorStop := makeStopped(runnerStoppedPrefix+"context canceled", true)
+	failedCheck := makeStopped("verification failed", false)
+	capped := makeStopped(startupLostVerification, false)
+	if _, err := e.store.AppendEvent(ctx, capped.ID, EventStartupResumed, map[string]int{"attempt": 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := e.scheduler(1)
+	stop := e.startScheduler(s)
+	time.Sleep(50 * time.Millisecond)
+	stop()
+	if _, ok, _ := e.store.LastEvent(ctx, resumable.ID, EventStartupResumed); ok {
+		t.Fatal("disabled scheduler resumed a task")
+	}
+
+	s = e.scheduler(1)
+	s.StartupResumeLimit = 1
+	stop = e.startScheduler(s)
+	defer stop()
+	e.waitUntil("startup resume reaches review", func() bool {
+		task, err := e.store.GetTask(ctx, resumable.ID)
+		other, otherErr := e.store.GetTask(ctx, second.ID)
+		return err == nil && otherErr == nil && task.Status == StatusReviewReady && other.Status == StatusReviewReady
+	})
+	for _, id := range []string{operatorStop.ID, failedCheck.ID, capped.ID} {
+		task, err := e.store.GetTask(ctx, id)
+		if err != nil || task.Status != StatusNeedsDecision {
+			t.Fatalf("task %s = %s, err %v", id, task.Status, err)
+		}
+	}
+	if _, ok, err := e.store.LastEvent(ctx, capped.ID, EventStartupResumeCapped); err != nil || !ok {
+		t.Fatalf("cap event: %v, %v", ok, err)
+	}
+	audit, err := e.store.ListAudit(ctx, AuditFilter{TaskID: resumable.ID, Actor: "system"})
+	if err != nil || len(audit) != 1 || !audit[0].OK {
+		t.Fatalf("startup audit: %+v, %v", audit, err)
+	}
+	if _, ok, err := e.store.LastEvent(ctx, resumable.ID, EventStartupResumed); err != nil || !ok {
+		t.Fatalf("resume event: %v, %v", ok, err)
+	}
+	if overall, _ := peak(e.agentLog()); overall != 1 {
+		t.Fatalf("startup concurrency = %d, want 1", overall)
+	}
+	if args := e.args(1); !strings.Contains(strings.Join(args, " "), "--resume existing-session") {
+		t.Fatalf("resume args = %v", args)
+	}
+}
