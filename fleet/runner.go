@@ -38,6 +38,9 @@ type Runner struct {
 
 	// Binary is the agent executable. Defaults to "claude".
 	Binary string
+	// CodexScoutBinary enables Codex for scouts. Ship still uses Binary.
+	CodexScoutBinary string
+	CodexScoutModel  string
 	// DefaultModel is used for tasks that do not name a model. Empty lets
 	// the CLI choose.
 	DefaultModel string
@@ -285,7 +288,23 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	if fresh {
 		sessionID = ""
 	}
+	binary := r.binary()
+	codex := task.Shape == ShapeScout && r.CodexScoutBinary != ""
+	if codex {
+		if firstNonEmpty(strings.TrimSpace(opts.Instruction), strings.TrimSpace(task.Goal)) == "" {
+			return runEnd{}, errors.New("Codex Scout requires a written goal for offline investigation")
+		}
+		if task.Budget.CostUSD > 0 || project.Budget.Task.CostUSD > 0 || project.Budget.Daily.CostUSD > 0 ||
+			(r.Budget != nil && (r.Budget.Task.CostUSD > 0 || r.Budget.ProjectDaily.CostUSD > 0 || r.Budget.Daily.CostUSD > 0)) {
+			return runEnd{}, errors.New("Codex Scout does not report USD usage and cannot run with a USD budget")
+		}
+		binary = r.CodexScoutBinary
+		sessionID = ""
+	}
 	args := r.buildArgs(*task, sessionID, r.prompt(*task, sessionID, opts))
+	if codex {
+		args = r.codexScoutArgs(*task, opts)
+	}
 	timeout := r.RunTimeout
 	if timeout <= 0 {
 		timeout = DefaultRunTimeout
@@ -297,8 +316,8 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 		Timeout:   timeout,
 		LogPrefix: "fleet.run",
 		// The prompt is in the task record; keep it out of the process log.
-		LogLabel: fmt.Sprintf("%s (task %s, %s)", filepath.Base(r.binary()), task.ID, task.Shape),
-	}, r.binary(), args...)
+		LogLabel: fmt.Sprintf("%s (task %s, %s)", filepath.Base(binary), task.ID, task.Shape),
+	}, binary, args...)
 	defer cancel()
 
 	stdout, err := cmd.StdoutPipe()
@@ -322,7 +341,12 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 		opts.OnStart(*task)
 	}
 
-	stream := r.consume(ctx, task, stdout)
+	var stream streamSummary
+	if codex {
+		stream = r.consumeCodexScout(ctx, task, stdout)
+	} else {
+		stream = r.consume(ctx, task, stdout)
+	}
 	waitErr := cmd.Wait()
 	run.finish()
 	elapsed := time.Since(started)
