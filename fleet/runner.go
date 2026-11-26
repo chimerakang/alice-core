@@ -291,6 +291,9 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	binary := r.binary()
 	codex := task.Shape == ShapeScout && r.CodexScoutBinary != ""
 	if codex {
+		if firstNonEmpty(strings.TrimSpace(opts.Instruction), strings.TrimSpace(task.Goal)) == "" {
+			return runEnd{}, errors.New("Codex Scout requires a written goal for offline investigation")
+		}
 		if task.Budget.CostUSD > 0 || project.Budget.Task.CostUSD > 0 || project.Budget.Daily.CostUSD > 0 ||
 			(r.Budget != nil && (r.Budget.Task.CostUSD > 0 || r.Budget.ProjectDaily.CostUSD > 0 || r.Budget.Daily.CostUSD > 0)) {
 			return runEnd{}, errors.New("Codex Scout does not report USD usage and cannot run with a USD budget")
@@ -300,7 +303,7 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	}
 	args := r.buildArgs(*task, sessionID, r.prompt(*task, sessionID, opts))
 	if codex {
-		args = r.codexScoutArgs(*task, r.prompt(*task, "", opts))
+		args = r.codexScoutArgs(*task, opts)
 	}
 	timeout := r.RunTimeout
 	if timeout <= 0 {

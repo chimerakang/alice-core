@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func (r *Runner) codexScoutArgs(task Task, prompt string) []string {
+func (r *Runner) codexScoutArgs(task Task, opts RunOptions) []string {
 	args := []string{
 		"--ask-for-approval", "never", "exec", "--json", "--sandbox", "read-only",
 		"--ephemeral", "--ignore-user-config", "--ignore-rules",
@@ -18,7 +18,8 @@ func (r *Runner) codexScoutArgs(task Task, prompt string) []string {
 	if model := firstNonEmpty(strings.TrimSpace(task.Model), strings.TrimSpace(r.CodexScoutModel)); model != "" {
 		args = append(args, "--model", model)
 	}
-	return append(args, "--", prompt)
+	goal := firstNonEmpty(strings.TrimSpace(opts.Instruction), task.Goal)
+	return append(args, "--", "Investigate the checked-out repository using read-only shell commands. Do not modify files or contact external services. Write a self-contained final report with file and line references. Fleet saves your final answer as report.md.\n\n"+goal)
 }
 
 // A Scout's last agent message is its report, but only a completed turn may

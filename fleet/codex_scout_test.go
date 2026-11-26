@@ -22,7 +22,7 @@ func TestRunCodexScout(t *testing.T) {
 			}
 			e.script(`{"type":"thread.started","thread_id":"ephemeral"}`,
 				`{"type":"item.completed","item":{"type":"agent_message","text":"Scout findings"}}`, last)
-			task := e.task(NewTask{Shape: ShapeScout})
+			task := e.task(NewTask{Shape: ShapeScout, Goal: "Inspect the repository."})
 			e.run(task.ID, RunOptions{})
 			for _, flag := range []string{"read-only", "never", "--ephemeral", "--ignore-user-config"} {
 				if !slices.Contains(e.args(1), flag) {
