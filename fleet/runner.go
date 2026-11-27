@@ -49,6 +49,7 @@ type Runner struct {
 	// MaxQuotaTransfers bounds the automatic transfers per task. Zero disables them.
 	ScoutQuotaFallback func(context.Context, Task, string) (model string, eligible bool)
 	MaxQuotaTransfers  int
+	scoutScheduleRoute func(context.Context, Task, bool) (backend, model, reason string)
 	// DefaultModel is used for tasks that do not name a model. Empty lets
 	// the CLI choose.
 	DefaultModel string
@@ -130,6 +131,7 @@ type RunOptions struct {
 	// promptly: the agent's output is not read until it does.
 	OnStart       func(Task)
 	startupResume *startupResume
+	scoutRoute    *scheduledScoutRoute
 }
 
 // RunResult describes a finished run.
@@ -336,6 +338,12 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 			codexTask.Model = task.quotaModel
 			if task.quotaBackend == "claude" && task.quotaModel != "" {
 				task.Model = task.quotaModel
+			}
+		} else if opts.scoutRoute != nil {
+			codex = opts.scoutRoute.backend == "codex"
+			codexTask.Model = opts.scoutRoute.model
+			if opts.scoutRoute.reason != "" {
+				r.record(ctx, task.ID, "scout.backend", map[string]string{"backend": opts.scoutRoute.backend, "reason": opts.scoutRoute.reason})
 			}
 		} else if r.ScoutRoute != nil {
 			codex, codexTask.Model = r.ScoutRoute(ctx, *task, usdLimited)
