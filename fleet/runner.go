@@ -359,7 +359,7 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 
 	var stream streamSummary
 	if codex {
-		stream = r.consumeCodexScout(ctx, task, stdout)
+		stream = r.consumeCodexScout(ctx, &codexTask, stdout)
 	} else {
 		stream = r.consume(ctx, task, stdout)
 	}
@@ -599,6 +599,7 @@ func (r *Runner) consume(ctx context.Context, task *Task, stdout interface{ Read
 	// still part of the task's history.
 	recCtx := context.WithoutCancel(ctx)
 	var sum streamSummary
+	model := firstNonEmpty(task.Model, r.DefaultModel)
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxStreamLine)
@@ -624,6 +625,7 @@ func (r *Runner) consume(ctx context.Context, task *Task, stdout interface{ Read
 		switch ev.Type {
 		case "system":
 			if ev.Subtype == "init" {
+				model = firstNonEmpty(ev.Model, model)
 				r.record(recCtx, task.ID, EventAgentInit, map[string]any{"session_id": ev.SessionID, "model": ev.Model})
 			}
 		case "assistant":
@@ -661,7 +663,7 @@ func (r *Runner) consume(ctx context.Context, task *Task, stdout interface{ Read
 				OutputTokens: ev.Usage.OutputTokens,
 				CostUSD:      ev.TotalCostUSD,
 			}
-			_ = r.Store.AddUsage(recCtx, task.ID, sum.usage)
+			_ = r.Store.AddBackendUsage(recCtx, task.ID, "claude", model, sum.usage)
 			r.record(recCtx, task.ID, EventAgentResult, map[string]any{
 				"subtype": ev.Subtype, "is_error": ev.IsError, "num_turns": ev.NumTurns,
 				"duration_ms": ev.DurationMs, "cost_usd": ev.TotalCostUSD,

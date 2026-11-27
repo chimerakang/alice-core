@@ -410,6 +410,10 @@ func (s *Store) lastEvent(ctx context.Context, taskID, eventType string) (Event,
 // AddUsage adds to a task's token and cost totals. Increments from
 // concurrent callers all count.
 func (s *Store) AddUsage(ctx context.Context, taskID string, u Usage) error {
+	return s.AddBackendUsage(ctx, taskID, "", "", u)
+}
+
+func (s *Store) AddBackendUsage(ctx context.Context, taskID, backend, model string, u Usage) error {
 	if u.InputTokens < 0 || u.OutputTokens < 0 || u.CostUSD < 0 {
 		return fmt.Errorf("%w: usage cannot be negative", ErrInvalidTask)
 	}
@@ -430,8 +434,8 @@ func (s *Store) AddUsage(ctx context.Context, taskID string, u Usage) error {
 		}
 		// The ledger row is what makes "how much today" answerable.
 		if _, err := tx.ExecContext(ctx, `INSERT INTO fleet_usage
-			(task_id, project_id, input_tokens, output_tokens, cost_usd, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			taskID, projectID, u.InputTokens, u.OutputTokens, u.CostUSD, now); err != nil {
+			(task_id, project_id, input_tokens, output_tokens, cost_usd, created_at, backend, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			taskID, projectID, u.InputTokens, u.OutputTokens, u.CostUSD, now, backend, model); err != nil {
 			return fmt.Errorf("fleet: record usage: %w", err)
 		}
 		return nil
