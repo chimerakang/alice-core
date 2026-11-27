@@ -211,6 +211,15 @@ func (s *Store) UpdateProject(ctx context.Context, id string, change func(*Proje
 		return Project{}, fmt.Errorf("fleet: encode budget: %w", err)
 	}
 	err = s.inTx(ctx, func(tx querier) error {
+		// Older started tasks have no snapshot. Preserve the current target
+		// before changing the project, including for previously started retries.
+		if _, err := tx.ExecContext(ctx, `UPDATE fleet_tasks
+			SET target_branch = (SELECT default_branch FROM fleet_projects WHERE id = ?)
+			WHERE project_id = ? AND target_branch = '' AND (started_at IS NOT NULL OR branch <> '')
+			AND EXISTS (SELECT 1 FROM fleet_projects WHERE id = ? AND default_branch <> ?)`,
+			id, id, id, updated.DefaultBranch); err != nil {
+			return fmt.Errorf("fleet: preserve targets for existing tasks: %w", err)
+		}
 		res, err := tx.ExecContext(ctx, `UPDATE fleet_projects SET
 			name = ?, repo_path = ?, remote = ?, default_branch = ?, trust_mode = ?,
 			verify_commands = ?, max_concurrent = ?, branch_prefix = ?, budget = ?, updated_at = ?

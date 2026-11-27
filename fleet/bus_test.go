@@ -217,7 +217,7 @@ func TestBus_Filters(t *testing.T) {
 	}
 }
 
-// The four kinds of event a front end follows all arrive on the one stream.
+// Lifecycle events that a front end follows all arrive on the one stream.
 func TestBus_CarriesStatusLivenessVerificationAndWakes(t *testing.T) {
 	e := newRunnerEnv(t)
 	c, cancel := context.WithCancel(ctx)
@@ -233,6 +233,11 @@ func TestBus_CarriesStatusLivenessVerificationAndWakes(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.scan(e.watcher()) // raises the review_ready wake
+	for _, kind := range []string{EventStartupResumed, EventStartupResumeCapped} {
+		if _, err := e.store.AppendEvent(ctx, task.ID, kind, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	seen := map[string]int{}
 	var wake BusEvent

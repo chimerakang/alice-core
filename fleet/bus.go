@@ -29,7 +29,7 @@ const DefaultBusInterval = 250 * time.Millisecond
 // LifecycleEvents are the event types that describe how tasks are doing, as
 // opposed to what their agents are saying: status changes, liveness changes,
 // verification results, and wakes.
-var LifecycleEvents = []string{EventStatus, EventLiveness, EventVerification, EventWake}
+var LifecycleEvents = []string{EventStatus, EventLiveness, EventVerification, EventWake, EventStartupResumed, EventStartupResumeCapped}
 
 // BusEvent is an event from the log together with the project it belongs to.
 type BusEvent struct {

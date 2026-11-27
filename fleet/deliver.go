@@ -87,6 +87,8 @@ func (d *Deliverer) Deliver(ctx context.Context, taskID string) (Delivery, error
 		return Delivery{}, err
 	}
 
+	project = task.deliveryProject(project)
+
 	out := Delivery{PRURL: task.PRURL}
 	// Past this point the task is always left in a definite state.
 	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -203,6 +205,7 @@ func (d *Deliverer) Approve(ctx context.Context, taskID, approver string) (Task,
 	if err != nil {
 		return Task{}, err
 	}
+	project = task.deliveryProject(project)
 	approver = firstNonEmpty(strings.TrimSpace(approver), "owner")
 
 	var landed string

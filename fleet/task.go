@@ -204,6 +204,8 @@ type Task struct {
 	// has been created.
 	Branch       string
 	WorktreePath string
+	// TargetBranch is the project target captured when the task first starts.
+	TargetBranch string
 	// SessionID is the agent's native session, used to resume it.
 	SessionID string
 	// PRURL and PRNumber identify the pull request opened for the task, in
@@ -308,4 +310,11 @@ type TaskFilter struct {
 	Order    TaskOrder
 	// Limit caps the result when positive.
 	Limit int
+}
+
+func (t Task) deliveryProject(project Project) Project {
+	if t.TargetBranch != "" {
+		project.DefaultBranch = t.TargetBranch
+	}
+	return project
 }

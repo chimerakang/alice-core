@@ -38,6 +38,9 @@ type Runner struct {
 
 	// Binary is the agent executable. Defaults to "claude".
 	Binary string
+	// CodexScoutBinary enables Codex for scouts. Ship still uses Binary.
+	CodexScoutBinary string
+	CodexScoutModel  string
 	// DefaultModel is used for tasks that do not name a model. Empty lets
 	// the CLI choose.
 	DefaultModel string
@@ -116,7 +119,8 @@ type RunOptions struct {
 	// OnStart, when set, is called once the agent process is running, with
 	// the task as it stands then (workspace assigned). It must return
 	// promptly: the agent's output is not read until it does.
-	OnStart func(Task)
+	OnStart       func(Task)
+	startupResume *startupResume
 }
 
 // RunResult describes a finished run.
@@ -211,7 +215,13 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 	}
 	defer r.unregister(taskID, run)
 
-	task, err := r.Store.Transition(ctx, taskID, StatusRunning, reason)
+	var task Task
+	if opts.startupResume == nil {
+		task, err = r.Store.Transition(ctx, taskID, StatusRunning, reason)
+	} else {
+		task, err = r.Store.transitionStartupResume(ctx, taskID, opts.startupResume)
+		_ = r.Store.recordAudit(context.WithoutCancel(ctx), startupResumeAudit(before, err))
+	}
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -276,7 +286,7 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	if task.Shape == ShapeScout && strings.TrimSpace(r.ReportRoot) == "" {
 		return runEnd{}, errors.New("fleet: Runner.ReportRoot is required to run scout tasks")
 	}
-	dir, err := r.prepareWorkspace(ctx, project, task)
+	dir, err := r.prepareWorkspace(ctx, task.deliveryProject(project), task)
 	if err != nil {
 		return runEnd{}, fmt.Errorf("prepare workspace: %w", err)
 	}
@@ -285,7 +295,23 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	if fresh {
 		sessionID = ""
 	}
+	binary := r.binary()
+	codex := task.Shape == ShapeScout && r.CodexScoutBinary != ""
+	if codex {
+		if firstNonEmpty(strings.TrimSpace(opts.Instruction), strings.TrimSpace(task.Goal)) == "" {
+			return runEnd{}, errors.New("Codex Scout requires a written goal for offline investigation")
+		}
+		if task.Budget.CostUSD > 0 || project.Budget.Task.CostUSD > 0 || project.Budget.Daily.CostUSD > 0 ||
+			(r.Budget != nil && (r.Budget.Task.CostUSD > 0 || r.Budget.ProjectDaily.CostUSD > 0 || r.Budget.Daily.CostUSD > 0)) {
+			return runEnd{}, errors.New("Codex Scout does not report USD usage and cannot run with a USD budget")
+		}
+		binary = r.CodexScoutBinary
+		sessionID = ""
+	}
 	args := r.buildArgs(*task, sessionID, r.prompt(*task, sessionID, opts))
+	if codex {
+		args = r.codexScoutArgs(*task, opts)
+	}
 	timeout := r.RunTimeout
 	if timeout <= 0 {
 		timeout = DefaultRunTimeout
@@ -297,8 +323,8 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 		Timeout:   timeout,
 		LogPrefix: "fleet.run",
 		// The prompt is in the task record; keep it out of the process log.
-		LogLabel: fmt.Sprintf("%s (task %s, %s)", filepath.Base(r.binary()), task.ID, task.Shape),
-	}, r.binary(), args...)
+		LogLabel: fmt.Sprintf("%s (task %s, %s)", filepath.Base(binary), task.ID, task.Shape),
+	}, binary, args...)
 	defer cancel()
 
 	stdout, err := cmd.StdoutPipe()
@@ -322,7 +348,12 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 		opts.OnStart(*task)
 	}
 
-	stream := r.consume(ctx, task, stdout)
+	var stream streamSummary
+	if codex {
+		stream = r.consumeCodexScout(ctx, task, stdout)
+	} else {
+		stream = r.consume(ctx, task, stdout)
+	}
 	waitErr := cmd.Wait()
 	run.finish()
 	elapsed := time.Since(started)
@@ -340,7 +371,7 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	case mode == stopInterrupt:
 		end.status, end.reason, end.requested = StatusNeedsDecision, stopReason, true
 	case ctx.Err() != nil:
-		end.status, end.reason = StatusNeedsDecision, "runner stopped: "+ctx.Err().Error()
+		end.status, end.reason = StatusNeedsDecision, runnerStoppedPrefix+ctx.Err().Error()
 	case waitErr != nil && elapsed >= timeout:
 		end.status, end.reason = StatusNeedsDecision, "timed out after "+timeout.String()
 	case stream.result == nil:

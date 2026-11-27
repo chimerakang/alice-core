@@ -105,7 +105,7 @@ func (s *Store) CreateTask(ctx context.Context, in NewTask) (Task, error) {
 }
 
 const taskColumns = `id, project_id, shape, goal, source_kind, issue_number, trust_mode, model, priority,
-	status, status_reason, branch, worktree_path, session_id,
+	status, status_reason, branch, worktree_path, session_id, target_branch,
 	input_tokens, output_tokens, cost_usd, created_at, updated_at, started_at, finished_at, last_activity_at, liveness, pr_url, pr_number, budget`
 
 func scanTask(row interface{ Scan(...any) error }) (Task, error) {
@@ -117,7 +117,7 @@ func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 		started, finished, active  sql.NullInt64
 	)
 	err := row.Scan(&t.ID, &t.ProjectID, &shape, &t.Goal, &kind, &t.Source.IssueNumber, &trust, &t.Model, &t.Priority,
-		&status, &t.StatusReason, &t.Branch, &t.WorktreePath, &t.SessionID,
+		&status, &t.StatusReason, &t.Branch, &t.WorktreePath, &t.SessionID, &t.TargetBranch,
 		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &created, &updated, &started, &finished, &active, &liveness, &t.PRURL, &t.PRNumber, &budget)
 	if err != nil {
 		return Task{}, err
@@ -224,11 +224,29 @@ func (s *Store) Transition(ctx context.Context, taskID string, to Status, reason
 // transition is Transition with the change optionally marked as requested:
 // the result of a stop someone asked for, which therefore needs no wake.
 func (s *Store) transition(ctx context.Context, taskID string, to Status, reason string, requested bool) (Task, error) {
+	return s.transitionWithStartupResume(ctx, taskID, to, reason, requested, nil)
+}
+
+func (s *Store) transitionWithStartupResume(ctx context.Context, taskID string, to Status, reason string, requested bool, resume *startupResume) (Task, error) {
 	var out Task
 	err := s.inTx(ctx, func(tx querier) error {
 		current, err := getTask(ctx, tx, taskID)
 		if err != nil {
 			return err
+		}
+		if resume != nil && (current.Status != StatusNeedsDecision || !current.UpdatedAt.Equal(resume.task.UpdatedAt) ||
+			current.StatusReason != resume.task.StatusReason || current.SessionID != resume.task.SessionID) {
+			return fmt.Errorf("%w: task %s changed since startup recovery", ErrConflict, taskID)
+		}
+		if resume != nil {
+			var lastStatusID int64
+			if err := tx.QueryRowContext(ctx, `SELECT MAX(id) FROM fleet_task_events WHERE task_id = ? AND type = ?`,
+				taskID, EventStatus).Scan(&lastStatusID); err != nil {
+				return fmt.Errorf("fleet: read startup recovery status event: %w", err)
+			}
+			if lastStatusID != resume.statusEventID {
+				return fmt.Errorf("%w: task %s has a newer status event", ErrConflict, taskID)
+			}
 		}
 		if !to.Valid() || !CanTransition(current.Status, to) {
 			return &TransitionError{TaskID: taskID, From: current.Status, To: to}
@@ -253,9 +271,13 @@ func (s *Store) transition(ctx context.Context, taskID string, to Status, reason
 		}
 		args = append(args, taskID, string(current.Status))
 
+		targetBranch := "target_branch"
+		if to == StatusRunning {
+			targetBranch = `COALESCE(NULLIF(target_branch, ''), (SELECT default_branch FROM fleet_projects WHERE id = fleet_tasks.project_id), '')`
+		}
 		res, err := tx.ExecContext(ctx, `UPDATE fleet_tasks SET
 			status = ?, status_reason = ?, updated_at = ?,
-			started_at = `+started+`, finished_at = `+finished+`
+			started_at = `+started+`, finished_at = `+finished+`, target_branch = `+targetBranch+`
 			WHERE id = ? AND status = ?`, args...)
 		if err != nil {
 			return fmt.Errorf("fleet: update task status: %w", err)
@@ -266,6 +288,12 @@ func (s *Store) transition(ctx context.Context, taskID string, to Status, reason
 		if _, err := appendEvent(ctx, tx, taskID, EventStatus,
 			StatusChange{From: current.Status, To: to, Reason: reason, Requested: requested}, now); err != nil {
 			return err
+		}
+		if resume != nil {
+			if _, err := appendEvent(ctx, tx, taskID, EventStartupResumed,
+				map[string]any{"attempt": resume.attempt, "reason": current.StatusReason, "actor": "system"}, now); err != nil {
+				return err
+			}
 		}
 		out, err = getTask(ctx, tx, taskID)
 		return err

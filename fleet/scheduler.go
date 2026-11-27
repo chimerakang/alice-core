@@ -35,6 +35,8 @@ type Scheduler struct {
 	// DefaultSchedulerConcurrency. Each project's own MaxConcurrent applies
 	// on top of it.
 	MaxConcurrent int
+	// StartupResumeLimit caps automatic recovery attempts per task. Zero disables them.
+	StartupResumeLimit int
 	// PollInterval is how often the queue is re-examined when nothing wakes
 	// the scheduler sooner. Zero means DefaultPollInterval.
 	PollInterval time.Duration
@@ -43,12 +45,13 @@ type Scheduler struct {
 	// report.
 	OnRecovery func(RecoveryReport)
 
-	mu       sync.Mutex
-	base     context.Context         // the context Run was given; background work lives as long as it does
-	inflight map[string]inflightTask // tasks this scheduler started and has not finished
-	wg       sync.WaitGroup
-	kick     chan struct{}
-	kickOnce sync.Once
+	mu             sync.Mutex
+	base           context.Context         // the context Run was given; background work lives as long as it does
+	inflight       map[string]inflightTask // tasks this scheduler started and has not finished
+	wg             sync.WaitGroup
+	kick           chan struct{}
+	kickOnce       sync.Once
+	startupResumes map[string]startupResume
 }
 
 // Scheduler defaults.
@@ -85,6 +88,16 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 	if s.OnRecovery != nil && !report.Empty() {
 		s.OnRecovery(report)
+	}
+
+	s.mu.Lock()
+	s.startupResumes = nil
+	if s.StartupResumeLimit > 0 {
+		s.startupResumes, err = s.findStartupResumes(ctx)
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return err
 	}
 
 	ticker := time.NewTicker(s.pollInterval())
@@ -175,7 +188,23 @@ func (s *Scheduler) Tick(ctx context.Context) ([]string, error) {
 			_, _ = s.Store.raiseWakes(context.WithoutCancel(ctx), blocked...)
 		}
 	}()
-	for _, task := range queued {
+	candidates := make([]Task, 0, len(s.startupResumes)+len(queued))
+	if len(s.startupResumes) > 0 {
+		waiting, err := s.Store.ListTasks(ctx, TaskFilter{Statuses: []Status{StatusNeedsDecision}, Order: QueueOrder})
+		if err != nil {
+			return nil, err
+		}
+		remaining := make(map[string]startupResume, len(s.startupResumes))
+		for _, task := range waiting {
+			if resume, ok := s.startupResumes[task.ID]; ok && task.UpdatedAt.Equal(resume.task.UpdatedAt) {
+				remaining[task.ID] = resume
+				candidates = append(candidates, task)
+			}
+		}
+		s.startupResumes = remaining
+	}
+	candidates = append(candidates, queued...)
+	for _, task := range candidates {
 		if len(occupied) >= limit {
 			break
 		}
@@ -215,15 +244,20 @@ func (s *Scheduler) Tick(ctx context.Context) ([]string, error) {
 		branches[key] = true
 		started = append(started, task.ID)
 
+		var opts RunOptions
+		if resumed, ok := s.startupResumes[task.ID]; ok && task.Status == StatusNeedsDecision {
+			delete(s.startupResumes, task.ID)
+			opts.startupResume = &resumed
+		}
 		s.wg.Add(1)
-		go func(id string) {
+		go func(id string, opts RunOptions) {
 			defer s.wg.Done()
-			_, _ = s.RunTask(ctx, id, RunOptions{})
+			_, _ = s.RunTask(ctx, id, opts)
 			s.mu.Lock()
 			delete(s.inflight, id)
 			s.mu.Unlock()
 			s.Kick() // a slot just opened
-		}(task.ID)
+		}(task.ID, opts)
 	}
 	return started, nil
 }
