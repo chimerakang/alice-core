@@ -45,6 +45,10 @@ type Runner struct {
 	ScoutRoute func(context.Context, Task, bool) (useCodex bool, model string)
 	// MatchQuotaError optionally recognizes provider-specific diagnostics from a failed run.
 	MatchQuotaError func(backend, diagnostic string) (exhausted bool, resetsAt time.Time)
+	// ScoutQuotaFallback authorizes an alternate backend and selects its model.
+	// MaxQuotaTransfers bounds the automatic transfers per task. Zero disables them.
+	ScoutQuotaFallback func(context.Context, Task, string) (model string, eligible bool)
+	MaxQuotaTransfers  int
 	// DefaultModel is used for tasks that do not name a model. Empty lets
 	// the CLI choose.
 	DefaultModel string
@@ -103,6 +107,7 @@ type Outcome string
 const (
 	// OutcomeFinished: the agent completed its turn; the task is verifying.
 	OutcomeFinished Outcome = "finished"
+	OutcomeRequeued Outcome = "requeued"
 	// OutcomeNeedsDecision: the run stopped short and the owner must decide.
 	OutcomeNeedsDecision Outcome = "needs_decision"
 	// OutcomeFailed: the run could not be carried out at all.
@@ -244,6 +249,14 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 	defer cancel()
 	// The process has exited and the Runner saw it happen.
 	_ = r.Store.SetLiveness(finalCtx, taskID, LivenessIdle)
+	if backend, model := r.quotaFallback(ctx, task, fresh, opts, end.quota); backend != "" {
+		final, err := r.Store.requeueQuotaTransfer(finalCtx, task, end.quota.Backend, backend, model)
+		if err == nil {
+			return RunResult{Task: final, Outcome: OutcomeRequeued, Reason: final.StatusReason, Usage: end.usage, Quota: end.quota}, nil
+		}
+		// Leave the task visible for owner intervention if the transfer failed.
+		end.reason += "; could not requeue on the alternate backend"
+	}
 	final, err := r.Store.transition(finalCtx, taskID, end.status, end.reason, end.requested)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("fleet: record end of run for task %s (%s: %s): %w", taskID, end.status, end.reason, err)
@@ -307,9 +320,17 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	codex := task.Shape == ShapeScout && r.CodexScoutBinary != ""
 	codexTask := *task
 	if task.Shape == ShapeScout {
-		usdLimited := task.Budget.CostUSD > 0 || project.Budget.Task.CostUSD > 0 || project.Budget.Daily.CostUSD > 0 ||
-			(r.Budget != nil && (r.Budget.Task.CostUSD > 0 || r.Budget.ProjectDaily.CostUSD > 0 || r.Budget.Daily.CostUSD > 0))
-		if r.ScoutRoute != nil {
+		usdLimited := r.scoutUSDLimited(*task, project)
+		if task.quotaBackend != "" {
+			codex = task.quotaBackend == "codex"
+			if codex && r.CodexScoutBinary == "" {
+				return runEnd{}, errors.New("queued quota transfer requires a configured Codex Scout")
+			}
+			codexTask.Model = task.quotaModel
+			if task.quotaBackend == "claude" && task.quotaModel != "" {
+				task.Model = task.quotaModel
+			}
+		} else if r.ScoutRoute != nil {
 			codex, codexTask.Model = r.ScoutRoute(ctx, *task, usdLimited)
 		}
 		if codex {

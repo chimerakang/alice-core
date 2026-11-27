@@ -277,13 +277,16 @@ func (s *Scheduler) RunTask(ctx context.Context, taskID string, opts RunOptions)
 		opts.OnStart = func(t Task) { s.Issues.Started(ctx, t) }
 	}
 	note := func(res RunResult) {
-		if tracked {
+		if tracked && res.Outcome != OutcomeRequeued {
 			s.Issues.NoteResult(ctx, res.Task, res.Text)
 		}
 	}
 
 	res, err := s.cycle(ctx, taskID, opts, note)
-	if err == nil && tracked {
+	if err == nil && res.Outcome == OutcomeRequeued {
+		s.Kick()
+	}
+	if err == nil && tracked && res.Outcome != OutcomeRequeued {
 		s.Issues.Finished(ctx, res.Task)
 	}
 	return res, err

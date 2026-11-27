@@ -106,7 +106,7 @@ func (s *Store) CreateTask(ctx context.Context, in NewTask) (Task, error) {
 
 const taskColumns = `id, project_id, shape, goal, source_kind, issue_number, trust_mode, model, priority,
 	status, status_reason, branch, worktree_path, session_id, target_branch,
-	input_tokens, output_tokens, cost_usd, created_at, updated_at, started_at, finished_at, last_activity_at, liveness, pr_url, pr_number, budget`
+	input_tokens, output_tokens, cost_usd, created_at, updated_at, started_at, finished_at, last_activity_at, liveness, pr_url, pr_number, budget, quota_backend, quota_model, quota_transfers`
 
 func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 	var (
@@ -118,7 +118,7 @@ func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 	)
 	err := row.Scan(&t.ID, &t.ProjectID, &shape, &t.Goal, &kind, &t.Source.IssueNumber, &trust, &t.Model, &t.Priority,
 		&status, &t.StatusReason, &t.Branch, &t.WorktreePath, &t.SessionID, &t.TargetBranch,
-		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &created, &updated, &started, &finished, &active, &liveness, &t.PRURL, &t.PRNumber, &budget)
+		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &created, &updated, &started, &finished, &active, &liveness, &t.PRURL, &t.PRNumber, &budget, &t.quotaBackend, &t.quotaModel, &t.quotaTransfers)
 	if err != nil {
 		return Task{}, err
 	}

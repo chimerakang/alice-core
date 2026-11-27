@@ -207,7 +207,10 @@ type Task struct {
 	// TargetBranch is the project target captured when the task first starts.
 	TargetBranch string
 	// SessionID is the agent's native session, used to resume it.
-	SessionID string
+	SessionID      string
+	quotaBackend   string
+	quotaModel     string
+	quotaTransfers int
 	// PRURL and PRNumber identify the pull request opened for the task, in
 	// the trust modes that open one.
 	PRURL    string
