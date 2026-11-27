@@ -525,6 +525,7 @@ func TestSchedulerStartupResumesOnlyServiceStops(t *testing.T) {
 	second := makeStopped(startupLostAgent, false)
 	operatorStop := makeStopped(runnerStoppedPrefix+"context canceled", true)
 	failedCheck := makeStopped("verification failed", false)
+	awaitingExternal := makeStopped(startupLostAgent, false)
 	capped := makeStopped(startupLostVerification, false)
 	if _, err := e.store.AppendEvent(ctx, capped.ID, EventStartupResumed, map[string]int{"attempt": 1}); err != nil {
 		t.Fatal(err)
@@ -540,6 +541,7 @@ func TestSchedulerStartupResumesOnlyServiceStops(t *testing.T) {
 
 	s = e.scheduler(1)
 	s.StartupResumeLimit = 1
+	s.PauseAutomaticResume = func(_ context.Context, taskID string) bool { return taskID == awaitingExternal.ID }
 	stop = e.startScheduler(s)
 	t.Cleanup(func() { stop() })
 	e.waitUntil("startup resume reaches review", func() bool {
@@ -547,7 +549,7 @@ func TestSchedulerStartupResumesOnlyServiceStops(t *testing.T) {
 		other, otherErr := e.store.GetTask(ctx, second.ID)
 		return err == nil && otherErr == nil && task.Status == StatusReviewReady && other.Status == StatusReviewReady
 	})
-	for _, id := range []string{operatorStop.ID, failedCheck.ID, capped.ID} {
+	for _, id := range []string{operatorStop.ID, failedCheck.ID, capped.ID, awaitingExternal.ID} {
 		task, err := e.store.GetTask(ctx, id)
 		if err != nil || task.Status != StatusNeedsDecision {
 			t.Fatalf("task %s = %s, err %v", id, task.Status, err)

@@ -689,3 +689,17 @@ func TestShipKeepsTargetWhenProjectChanges(t *testing.T) {
 		t.Fatalf("new worktree head = %s, want develop", head)
 	}
 }
+
+func TestDeliver_DirectPRStaysReviewableWithAcceptanceGate(t *testing.T) {
+	e := newDeliveryEnv(t, TrustDirectPR)
+	task := e.reviewReady("Require human evidence")
+	e.deliverer.RequireDirectPRReview = func(context.Context, string) bool { return true }
+	d := e.deliver(task.ID)
+	if d.Task.Status != StatusReviewReady || d.Task.PRNumber == 0 {
+		t.Fatalf("delivery no longer reviewable: %+v", d.Task)
+	}
+	final, err := e.deliverer.Merge(ctx, task.ID, "owner")
+	if err != nil || final.Status != StatusDone || len(e.forge.merged) != 1 {
+		t.Fatalf("merge = %+v, %v", final, err)
+	}
+}
