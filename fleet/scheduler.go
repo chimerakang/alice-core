@@ -250,7 +250,12 @@ func (s *Scheduler) Tick(ctx context.Context) ([]string, error) {
 		if task.Status == StatusQueued {
 			backend, scoutRoute := s.Runner.queuedBackend(ctx, task, project)
 			if backend != "" {
-				if blocked, _, err := s.Store.BackendQuotaBlocked(ctx, backend); err != nil || blocked {
+				if quotaBlocked, _, err := s.Store.BackendQuotaBlocked(ctx, backend); err != nil || quotaBlocked {
+					if task.Shape == ShapeScout && !s.Runner.scoutUSDLimited(task, project) && s.Runner.CodexScoutBinary != "" {
+						if wake, bothBlocked, err := s.Store.bothBackendsQuotaWake(ctx); err == nil && bothBlocked {
+							blocked = append(blocked, wake)
+						}
+					}
 					continue
 				}
 			}

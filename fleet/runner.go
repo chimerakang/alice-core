@@ -45,6 +45,8 @@ type Runner struct {
 	ScoutRoute func(context.Context, Task, bool) (useCodex bool, model string)
 	// MatchQuotaError optionally recognizes provider-specific diagnostics from a failed run.
 	MatchQuotaError func(backend, diagnostic string) (exhausted bool, resetsAt time.Time)
+	// QuotaUnknownResetAfter is an optional wait before probing an unknown reset.
+	QuotaUnknownResetAfter time.Duration
 	// ScoutQuotaFallback authorizes an alternate backend and selects its model.
 	// MaxQuotaTransfers bounds the automatic transfers per task. Zero disables them.
 	ScoutQuotaFallback func(context.Context, Task, string) (model string, eligible bool)
@@ -243,7 +245,7 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 	// From here on the task is ours and must leave "running" whatever
 	// happens, including after ctx is cancelled.
 	quotaReadStarted := r.Store.now()
-	end, err := r.execute(ctx, &task, fresh, opts, run)
+	end, err := r.execute(ctx, &task, fresh && (!strings.HasPrefix(before.StatusReason, quotaWaitPrefix) || (opts.scoutRoute != nil && opts.scoutRoute.reason == "quota_eligibility_changed")), opts, run)
 	if err != nil {
 		end = runEnd{status: StatusFailed, reason: err.Error()}
 	}
@@ -257,18 +259,27 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 	}
 	quotaRecorded := end.quota == nil
 	if end.quota != nil {
+		if end.quota.ResetsAt.IsZero() && r.QuotaUnknownResetAfter > 0 {
+			end.quota.ResetsAt = r.Store.now().Add(r.QuotaUnknownResetAfter)
+		}
 		quotaRecorded = r.Store.recordQuotaExhaustion(finalCtx, taskID, *end.quota) == nil
 		if !quotaRecorded {
 			end.reason += "; could not persist quota state"
 		}
 	}
-	if backend, model := r.quotaFallback(finalCtx, task, fresh, opts, end.quota); quotaRecorded && ctx.Err() == nil && backend != "" {
-		final, err := r.Store.requeueQuotaTransfer(finalCtx, task, end.quota.Backend, backend, model)
+	if quotaRecorded && end.quota != nil && ctx.Err() == nil && strings.TrimSpace(opts.Instruction) == "" {
+		backend, model := r.quotaFallback(finalCtx, task, fresh, opts, end.quota)
+		var final Task
+		var err error
+		if backend != "" {
+			final, err = r.Store.requeueQuotaTransfer(finalCtx, task, end.quota.Backend, backend, model)
+		} else {
+			final, err = r.Store.requeueQuotaWait(finalCtx, task, end.quota.Backend)
+		}
 		if err == nil {
 			return RunResult{Task: final, Outcome: OutcomeRequeued, Reason: final.StatusReason, Usage: end.usage, Quota: end.quota}, nil
 		}
-		// Leave the task visible for owner intervention if the transfer failed.
-		end.reason += "; could not requeue on the alternate backend"
+		end.reason += "; could not requeue after quota exhaustion"
 	}
 	final, err := r.Store.transition(finalCtx, taskID, end.status, end.reason, end.requested)
 	if err != nil {
@@ -335,7 +346,7 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	codexTask := *task
 	if task.Shape == ShapeScout {
 		usdLimited := r.scoutUSDLimited(*task, project)
-		if task.quotaBackend != "" {
+		if task.quotaBackend != "" && opts.scoutRoute == nil {
 			codex = task.quotaBackend == "codex"
 			if codex && r.CodexScoutBinary == "" {
 				return runEnd{}, errors.New("queued quota transfer requires a configured Codex Scout")
@@ -352,6 +363,8 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 			}
 		} else if r.ScoutRoute != nil {
 			codex, codexTask.Model = r.ScoutRoute(ctx, *task, usdLimited)
+		} else if usdLimited {
+			codex = false
 		}
 		if codex {
 			if firstNonEmpty(strings.TrimSpace(opts.Instruction), strings.TrimSpace(task.Goal)) == "" {
@@ -621,8 +634,9 @@ func (r *Runner) writeReport(task Task, text string) (string, error) {
 // types and fields are ignored, so new CLI versions do not break the runner.
 type agentEvent struct {
 	RateLimitInfo *struct {
-		Status   string `json:"status"`
-		ResetsAt int64  `json:"resetsAt"`
+		Status      string   `json:"status"`
+		ResetsAt    int64    `json:"resetsAt"`
+		Utilization *float64 `json:"utilization"`
 	} `json:"rate_limit_info"`
 	Type      string `json:"type"`
 	Subtype   string `json:"subtype"`
@@ -701,6 +715,13 @@ func (r *Runner) consume(ctx context.Context, task *Task, stdout interface{ Read
 		switch ev.Type {
 		case "rate_limit_event":
 			if info := ev.RateLimitInfo; info != nil {
+				now := r.Store.now()
+				reset := time.Unix(info.ResetsAt, 0).UTC()
+				if info.Utilization != nil && *info.Utilization >= 0 && *info.Utilization <= 1 && reset.After(now) {
+					_ = r.Store.recordProviderQuotaMeasurement(recCtx, "claude", providerQuotaSnapshot{
+						remaining: 1 - *info.Utilization, resetAt: reset,
+					}, now)
+				}
 				switch info.Status {
 				case "rejected":
 					sum.claudeAllowed = false

@@ -38,14 +38,46 @@ func (r *Runner) quotaFallback(ctx context.Context, task Task, fresh bool, opts 
 		return "", ""
 	}
 	blocked, reset, err := r.Store.BackendQuotaBlocked(ctx, backend)
-	if err != nil || (blocked && reset.IsZero()) {
+	if err != nil {
 		return "", ""
+	}
+	if blocked {
+		_, originalReset, err := r.Store.BackendQuotaBlocked(ctx, quota.Backend)
+		if err != nil || reset.IsZero() || (!originalReset.IsZero() && !reset.Before(originalReset)) {
+			return "", ""
+		}
 	}
 	model, eligible := r.ScoutQuotaFallback(ctx, task, backend)
 	if !eligible {
 		return "", ""
 	}
 	return backend, model
+}
+
+const quotaWaitPrefix = "waiting for provider quota: "
+
+// A wait keeps the session and does not count toward the transfer limit.
+func (s *Store) requeueQuotaWait(ctx context.Context, task Task, backend string) (Task, error) {
+	var out Task
+	reason := quotaWaitPrefix + backend
+	err := s.inTx(ctx, func(tx querier) error {
+		now := toMillis(s.now())
+		result, err := tx.ExecContext(ctx, `UPDATE fleet_tasks SET status = ?, status_reason = ?, updated_at = ?,
+			started_at = NULL, finished_at = NULL WHERE id = ? AND status = ?`,
+			StatusQueued, reason, now, task.ID, StatusRunning)
+		if err != nil {
+			return err
+		}
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			return fmt.Errorf("%w: task %s changed before quota wait", ErrConflict, task.ID)
+		}
+		if _, err := appendEvent(ctx, tx, task.ID, EventStatus, StatusChange{From: StatusRunning, To: StatusQueued, Reason: reason}, now); err != nil {
+			return err
+		}
+		out, err = getTask(ctx, tx, task.ID)
+		return err
+	})
+	return out, err
 }
 
 // requeueQuotaTransfer is reserved for the active runner. It carries the

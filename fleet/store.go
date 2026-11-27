@@ -166,6 +166,12 @@ var schema = []string{
 		backend TEXT PRIMARY KEY,
 		reset_at INTEGER
 	)`,
+	`CREATE TABLE IF NOT EXISTS fleet_provider_quota_measurements (
+		backend TEXT PRIMARY KEY,
+		remaining REAL NOT NULL,
+		reset_at INTEGER NOT NULL,
+		observed_at INTEGER NOT NULL
+	)`,
 	`CREATE TABLE IF NOT EXISTS fleet_usage (
 		id            INTEGER PRIMARY KEY AUTOINCREMENT,
 		task_id       TEXT NOT NULL,
@@ -226,6 +232,7 @@ var schema = []string{
 // addedColumns are columns introduced after a table first shipped. CREATE
 // TABLE IF NOT EXISTS leaves an existing table alone, so they are added here.
 var addedColumns = []struct{ table, column, definition string }{
+	{"fleet_backend_quota", "episode_at", "INTEGER NOT NULL DEFAULT 0"},
 	{"fleet_backend_quota", "observed_at", "INTEGER NOT NULL DEFAULT 0"},
 	{"fleet_tasks", "quota_backend", "TEXT NOT NULL DEFAULT ''"},
 	{"fleet_tasks", "quota_model", "TEXT NOT NULL DEFAULT ''"},

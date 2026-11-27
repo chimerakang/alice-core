@@ -387,7 +387,7 @@ func (n *Notifier) decide(ctx context.Context, prefs NotifyPrefs, w Wake) (Dispo
 // until the user acts.
 func needsTheUser(kind WakeKind) bool {
 	switch kind {
-	case WakeQuestion, WakeNeedsDecision, WakeFailed, WakeOverBudget:
+	case WakeQuestion, WakeNeedsDecision, WakeFailed, WakeOverBudget, WakeProviderQuota:
 		return true
 	}
 	return false

@@ -27,6 +27,8 @@ const (
 	WakeStuck WakeKind = "stuck"
 	// WakeOverBudget: the task has used more than its budget allows.
 	WakeOverBudget WakeKind = "over_budget"
+	// WakeProviderQuota indicates both Scout backends currently reject work.
+	WakeProviderQuota WakeKind = "provider_quota"
 )
 
 // Wake is one entry in the durable queue of things that need attention. A

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"time"
@@ -19,14 +20,19 @@ func (s *Scheduler) refreshCodexQuota(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		observedBefore := s.Store.now()
-		allowed, err := readCodexQuota(ctx, s.Runner.CodexScoutBinary)
-		if err == nil && allowed != nil {
-			if *allowed {
-				if cleared, err := s.Store.clearQuotaObservedBefore(ctx, "codex", observedBefore); err == nil && cleared {
-					s.Kick()
+		snapshot, err := readCodexQuota(ctx, s.Runner.CodexScoutBinary, observedBefore)
+		if err == nil {
+			if !snapshot.resetAt.IsZero() {
+				_ = s.Store.recordProviderQuotaMeasurement(ctx, "codex", snapshot, observedBefore)
+			}
+			if snapshot.allowed != nil {
+				if *snapshot.allowed {
+					if cleared, err := s.Store.clearQuotaObservedBefore(ctx, "codex", observedBefore); err == nil && cleared {
+						s.Kick()
+					}
+				} else {
+					_ = s.Store.recordCodexQuotaDenied(ctx, observedBefore, snapshot.resetAt)
 				}
-			} else {
-				_ = s.Store.recordCodexQuotaDenied(ctx, observedBefore)
 			}
 		}
 		select {
@@ -37,9 +43,60 @@ func (s *Scheduler) refreshCodexQuota(ctx context.Context) {
 	}
 }
 
-// readCodexQuota uses the App Server's account read with the CLI's managed
-// login. Only an explicit ordinaryUsageAllowed=true confirms recovery.
-func readCodexQuota(ctx context.Context, binary string) (*bool, error) {
+type providerQuotaSnapshot struct {
+	allowed   *bool
+	remaining float64
+	resetAt   time.Time
+}
+
+type codexQuotaWindow struct {
+	UsedPercent *float64 `json:"usedPercent"`
+	ResetsAt    int64    `json:"resetsAt"`
+}
+
+type codexQuotaBucket struct {
+	Primary, Secondary *codexQuotaWindow
+}
+
+type codexQuotaReply struct {
+	OrdinaryUsageAllowed *bool                       `json:"ordinaryUsageAllowed"`
+	RateLimits           codexQuotaBucket            `json:"rateLimits"`
+	RateLimitsByLimitID  map[string]codexQuotaBucket `json:"rateLimitsByLimitId"`
+}
+
+// snapshot uses the most constraining active window in the ordinary Codex
+// bucket. When both windows are exhausted, both must reset before admission.
+func (q codexQuotaReply) snapshot(now time.Time) providerQuotaSnapshot {
+	bucket := q.RateLimits
+	if primary, ok := q.RateLimitsByLimitID["codex"]; ok {
+		bucket = primary
+	}
+	out := providerQuotaSnapshot{allowed: q.OrdinaryUsageAllowed}
+	for _, window := range []*codexQuotaWindow{bucket.Primary, bucket.Secondary} {
+		if window == nil || window.UsedPercent == nil {
+			continue
+		}
+		used := *window.UsedPercent
+		reset := time.Unix(window.ResetsAt, 0).UTC()
+		if used < 0 || used > 100 || math.IsNaN(used) || !reset.After(now) {
+			continue
+		}
+		remaining := 1 - used/100
+		if out.resetAt.IsZero() || remaining < out.remaining || (remaining == 0 && out.remaining == 0 && reset.After(out.resetAt)) {
+			out.remaining, out.resetAt = remaining, reset
+		}
+	}
+	if !out.resetAt.IsZero() {
+		allowed := out.remaining > 0
+		if out.allowed == nil || !allowed {
+			out.allowed = &allowed
+		}
+	}
+	return out
+}
+
+// readCodexQuota queries the public App Server protocol.
+func readCodexQuota(ctx context.Context, binary string, now time.Time) (providerQuotaSnapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, "app-server")
@@ -48,16 +105,16 @@ func readCodexQuota(ctx context.Context, binary string) (*bool, error) {
 	cmd.WaitDelay = 2 * time.Second
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, err
+		return providerQuotaSnapshot{}, err
 	}
 	defer stdin.Close()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return providerQuotaSnapshot{}, err
 	}
 	defer stdout.Close()
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return providerQuotaSnapshot{}, err
 	}
 	defer func() {
 		_ = cmd.Process.Kill()
@@ -95,16 +152,14 @@ func readCodexQuota(ctx context.Context, binary string) (*bool, error) {
 	if err := request(1, "initialize", map[string]any{
 		"clientInfo": map[string]string{"name": "alice_fleet", "version": "1"},
 	}, nil); err != nil {
-		return nil, err
+		return providerQuotaSnapshot{}, err
 	}
 	if err := enc.Encode(map[string]string{"method": "initialized"}); err != nil {
-		return nil, err
+		return providerQuotaSnapshot{}, err
 	}
-	var quota struct {
-		OrdinaryUsageAllowed *bool `json:"ordinaryUsageAllowed"`
+	var quota codexQuotaReply
+	if err := request(2, "account/rateLimits/read", nil, &quota); err != nil {
+		return providerQuotaSnapshot{}, err
 	}
-	if err := request(2, "account/rateLimits/read", map[string]bool{"excludeResetCreditDetails": true}, &quota); err != nil {
-		return nil, err
-	}
-	return quota.OrdinaryUsageAllowed, nil
+	return quota.snapshot(now), nil
 }
