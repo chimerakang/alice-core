@@ -30,6 +30,10 @@ func stoppedDuringServiceShutdown(reason string) bool {
 	return false
 }
 
+func (s *Scheduler) automaticResumePaused(ctx context.Context, taskID string) bool {
+	return s != nil && s.PauseAutomaticResume != nil && s.PauseAutomaticResume(ctx, taskID)
+}
+
 func (s *Scheduler) findStartupResumes(ctx context.Context) (map[string]startupResume, error) {
 	tasks, err := s.Store.ListTasks(ctx, TaskFilter{Statuses: []Status{StatusNeedsDecision}})
 	if err != nil {
@@ -37,7 +41,7 @@ func (s *Scheduler) findStartupResumes(ctx context.Context) (map[string]startupR
 	}
 	resumes := make(map[string]startupResume)
 	for _, task := range tasks {
-		if task.SessionID == "" || !stoppedDuringServiceShutdown(task.StatusReason) {
+		if task.SessionID == "" || !stoppedDuringServiceShutdown(task.StatusReason) || s.automaticResumePaused(ctx, task.ID) {
 			continue
 		}
 

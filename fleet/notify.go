@@ -387,7 +387,7 @@ func (n *Notifier) decide(ctx context.Context, prefs NotifyPrefs, w Wake) (Dispo
 // until the user acts.
 func needsTheUser(kind WakeKind) bool {
 	switch kind {
-	case WakeQuestion, WakeNeedsDecision, WakeFailed, WakeOverBudget:
+	case WakeQuestion, WakeNeedsDecision, WakeFailed, WakeOverBudget, WakeProviderQuota:
 		return true
 	}
 	return false
@@ -414,6 +414,9 @@ func (n *Notifier) whileAway(ctx context.Context, prefs NotifyPrefs, w Wake) (Di
 		already, err := n.Store.countDisposition(ctx, n.User, w.TaskID, AutoResumed, prefs.Since)
 		if err != nil || already > 0 {
 			return Held, "already resumed once while away"
+		}
+		if n.Commander.Scheduler.automaticResumePaused(ctx, w.TaskID) {
+			return Held, "awaiting external confirmation"
 		}
 		if _, err := n.Commander.Reply(ctx, actor, ReplyRequest{TaskID: w.TaskID}); err != nil {
 			return Held, "could not resume automatically: " + err.Error()

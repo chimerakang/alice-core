@@ -106,7 +106,7 @@ func (s *Store) CreateTask(ctx context.Context, in NewTask) (Task, error) {
 
 const taskColumns = `id, project_id, shape, goal, source_kind, issue_number, trust_mode, model, priority,
 	status, status_reason, branch, worktree_path, session_id, target_branch,
-	input_tokens, output_tokens, cost_usd, created_at, updated_at, started_at, finished_at, last_activity_at, liveness, pr_url, pr_number, budget`
+	input_tokens, output_tokens, cost_usd, created_at, updated_at, started_at, finished_at, last_activity_at, liveness, pr_url, pr_number, budget, quota_backend, quota_model, quota_transfers`
 
 func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 	var (
@@ -118,7 +118,7 @@ func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 	)
 	err := row.Scan(&t.ID, &t.ProjectID, &shape, &t.Goal, &kind, &t.Source.IssueNumber, &trust, &t.Model, &t.Priority,
 		&status, &t.StatusReason, &t.Branch, &t.WorktreePath, &t.SessionID, &t.TargetBranch,
-		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &created, &updated, &started, &finished, &active, &liveness, &t.PRURL, &t.PRNumber, &budget)
+		&t.InputTokens, &t.OutputTokens, &t.CostUSD, &created, &updated, &started, &finished, &active, &liveness, &t.PRURL, &t.PRNumber, &budget, &t.quotaBackend, &t.quotaModel, &t.quotaTransfers)
 	if err != nil {
 		return Task{}, err
 	}
@@ -228,6 +228,14 @@ func (s *Store) transition(ctx context.Context, taskID string, to Status, reason
 }
 
 func (s *Store) transitionWithStartupResume(ctx context.Context, taskID string, to Status, reason string, requested bool, resume *startupResume) (Task, error) {
+	return s.transitionTask(ctx, taskID, to, reason, requested, resume, nil)
+}
+
+func (s *Store) transitionWithModel(ctx context.Context, taskID string, to Status, reason string, requested bool, change *RetryModel) (Task, error) {
+	return s.transitionTask(ctx, taskID, to, reason, requested, nil, change)
+}
+
+func (s *Store) transitionTask(ctx context.Context, taskID string, to Status, reason string, requested bool, resume *startupResume, change *RetryModel) (Task, error) {
 	var out Task
 	err := s.inTx(ctx, func(tx querier) error {
 		current, err := getTask(ctx, tx, taskID)
@@ -269,7 +277,14 @@ func (s *Store) transitionWithStartupResume(ctx context.Context, taskID string, 
 			finished = "?"
 			args = append(args, now)
 		}
-		args = append(args, taskID, string(current.Status))
+		model := current.Model
+		if change != nil {
+			if current.Model != change.ExpectedModel {
+				return fmt.Errorf("%w: task %s model changed", ErrConflict, taskID)
+			}
+			model = change.Model
+		}
+		args = append(args, model, taskID, string(current.Status))
 
 		targetBranch := "target_branch"
 		if to == StatusRunning {
@@ -277,7 +292,7 @@ func (s *Store) transitionWithStartupResume(ctx context.Context, taskID string, 
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE fleet_tasks SET
 			status = ?, status_reason = ?, updated_at = ?,
-			started_at = `+started+`, finished_at = `+finished+`, target_branch = `+targetBranch+`
+			started_at = `+started+`, finished_at = `+finished+`, target_branch = `+targetBranch+`, model = ?
 			WHERE id = ? AND status = ?`, args...)
 		if err != nil {
 			return fmt.Errorf("fleet: update task status: %w", err)
@@ -292,6 +307,11 @@ func (s *Store) transitionWithStartupResume(ctx context.Context, taskID string, 
 		if resume != nil {
 			if _, err := appendEvent(ctx, tx, taskID, EventStartupResumed,
 				map[string]any{"attempt": resume.attempt, "reason": current.StatusReason, "actor": "system"}, now); err != nil {
+				return err
+			}
+		}
+		if change != nil && len(change.Event) != 0 {
+			if _, err := appendEvent(ctx, tx, taskID, EventModelSelected, change.Event, now); err != nil {
 				return err
 			}
 		}
@@ -390,6 +410,10 @@ func (s *Store) lastEvent(ctx context.Context, taskID, eventType string) (Event,
 // AddUsage adds to a task's token and cost totals. Increments from
 // concurrent callers all count.
 func (s *Store) AddUsage(ctx context.Context, taskID string, u Usage) error {
+	return s.AddBackendUsage(ctx, taskID, "", "", u)
+}
+
+func (s *Store) AddBackendUsage(ctx context.Context, taskID, backend, model string, u Usage) error {
 	if u.InputTokens < 0 || u.OutputTokens < 0 || u.CostUSD < 0 {
 		return fmt.Errorf("%w: usage cannot be negative", ErrInvalidTask)
 	}
@@ -410,8 +434,8 @@ func (s *Store) AddUsage(ctx context.Context, taskID string, u Usage) error {
 		}
 		// The ledger row is what makes "how much today" answerable.
 		if _, err := tx.ExecContext(ctx, `INSERT INTO fleet_usage
-			(task_id, project_id, input_tokens, output_tokens, cost_usd, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			taskID, projectID, u.InputTokens, u.OutputTokens, u.CostUSD, now); err != nil {
+			(task_id, project_id, input_tokens, output_tokens, cost_usd, created_at, backend, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			taskID, projectID, u.InputTokens, u.OutputTokens, u.CostUSD, now, backend, model); err != nil {
 			return fmt.Errorf("fleet: record usage: %w", err)
 		}
 		return nil

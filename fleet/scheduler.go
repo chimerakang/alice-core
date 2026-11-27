@@ -37,6 +37,8 @@ type Scheduler struct {
 	MaxConcurrent int
 	// StartupResumeLimit caps automatic recovery attempts per task. Zero disables them.
 	StartupResumeLimit int
+	// PauseAutomaticResume lets an embedding application hold a task for external input.
+	PauseAutomaticResume func(context.Context, string) bool
 	// PollInterval is how often the queue is re-examined when nothing wakes
 	// the scheduler sooner. Zero means DefaultPollInterval.
 	PollInterval time.Duration
@@ -98,6 +100,14 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	s.mu.Unlock()
 	if err != nil {
 		return err
+	}
+
+	if s.Runner.CodexScoutBinary != "" {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.refreshCodexQuota(ctx)
+		}()
 	}
 
 	ticker := time.NewTicker(s.pollInterval())
@@ -196,7 +206,7 @@ func (s *Scheduler) Tick(ctx context.Context) ([]string, error) {
 		}
 		remaining := make(map[string]startupResume, len(s.startupResumes))
 		for _, task := range waiting {
-			if resume, ok := s.startupResumes[task.ID]; ok && task.UpdatedAt.Equal(resume.task.UpdatedAt) {
+			if resume, ok := s.startupResumes[task.ID]; ok && task.UpdatedAt.Equal(resume.task.UpdatedAt) && !s.automaticResumePaused(ctx, task.ID) {
 				remaining[task.ID] = resume
 				candidates = append(candidates, task)
 			}
@@ -238,13 +248,28 @@ func (s *Scheduler) Tick(ctx context.Context) ([]string, error) {
 			continue
 		}
 
+		var opts RunOptions
+		if task.Status == StatusQueued {
+			backend, scoutRoute := s.Runner.queuedBackend(ctx, task, project)
+			if backend != "" {
+				if quotaBlocked, _, err := s.Store.BackendQuotaBlocked(ctx, backend); err != nil || quotaBlocked {
+					if task.Shape == ShapeScout && !s.Runner.scoutUSDLimited(task, project) && s.Runner.CodexScoutBinary != "" {
+						if wake, bothBlocked, err := s.Store.bothBackendsQuotaWake(ctx); err == nil && bothBlocked {
+							blocked = append(blocked, wake)
+						}
+					}
+					continue
+				}
+			}
+			opts.scoutRoute = scoutRoute
+		}
+
 		slot := inflightTask{projectID: task.ProjectID, branch: branch}
 		occupied[task.ID], s.inflight[task.ID] = slot, slot
 		perProject[task.ProjectID]++
 		branches[key] = true
 		started = append(started, task.ID)
 
-		var opts RunOptions
 		if resumed, ok := s.startupResumes[task.ID]; ok && task.Status == StatusNeedsDecision {
 			delete(s.startupResumes, task.ID)
 			opts.startupResume = &resumed
@@ -277,13 +302,16 @@ func (s *Scheduler) RunTask(ctx context.Context, taskID string, opts RunOptions)
 		opts.OnStart = func(t Task) { s.Issues.Started(ctx, t) }
 	}
 	note := func(res RunResult) {
-		if tracked {
+		if tracked && res.Outcome != OutcomeRequeued {
 			s.Issues.NoteResult(ctx, res.Task, res.Text)
 		}
 	}
 
 	res, err := s.cycle(ctx, taskID, opts, note)
-	if err == nil && tracked {
+	if err == nil && res.Outcome == OutcomeRequeued {
+		s.Kick()
+	}
+	if err == nil && tracked && res.Outcome != OutcomeRequeued {
 		s.Issues.Finished(ctx, res.Task)
 	}
 	return res, err

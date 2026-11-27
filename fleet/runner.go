@@ -41,6 +41,17 @@ type Runner struct {
 	// CodexScoutBinary enables Codex for scouts. Ship still uses Binary.
 	CodexScoutBinary string
 	CodexScoutModel  string
+	// ScoutRoute optionally selects the backend and model per Scout.
+	ScoutRoute func(context.Context, Task, bool) (useCodex bool, model string)
+	// MatchQuotaError optionally recognizes provider-specific diagnostics from a failed run.
+	MatchQuotaError func(backend, diagnostic string) (exhausted bool, resetsAt time.Time)
+	// QuotaUnknownResetAfter is an optional wait before probing an unknown reset.
+	QuotaUnknownResetAfter time.Duration
+	// ScoutQuotaFallback authorizes an alternate backend and selects its model.
+	// MaxQuotaTransfers bounds the automatic transfers per task. Zero disables them.
+	ScoutQuotaFallback func(context.Context, Task, string) (model string, eligible bool)
+	MaxQuotaTransfers  int
+	scoutScheduleRoute func(context.Context, Task, bool) (backend, model, reason string)
 	// DefaultModel is used for tasks that do not name a model. Empty lets
 	// the CLI choose.
 	DefaultModel string
@@ -99,6 +110,7 @@ type Outcome string
 const (
 	// OutcomeFinished: the agent completed its turn; the task is verifying.
 	OutcomeFinished Outcome = "finished"
+	OutcomeRequeued Outcome = "requeued"
 	// OutcomeNeedsDecision: the run stopped short and the owner must decide.
 	OutcomeNeedsDecision Outcome = "needs_decision"
 	// OutcomeFailed: the run could not be carried out at all.
@@ -121,10 +133,13 @@ type RunOptions struct {
 	// promptly: the agent's output is not read until it does.
 	OnStart       func(Task)
 	startupResume *startupResume
+	scoutRoute    *scheduledScoutRoute
 }
 
 // RunResult describes a finished run.
 type RunResult struct {
+	// Quota is set when the provider rejected a failed run for lack of capacity.
+	Quota *QuotaExhaustion
 	// Task is the task as stored after the run.
 	Task    Task
 	Outcome Outcome
@@ -229,7 +244,8 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 
 	// From here on the task is ours and must leave "running" whatever
 	// happens, including after ctx is cancelled.
-	end, err := r.execute(ctx, &task, fresh, opts, run)
+	quotaReadStarted := r.Store.now()
+	end, err := r.execute(ctx, &task, fresh && (!strings.HasPrefix(before.StatusReason, quotaWaitPrefix) || (opts.scoutRoute != nil && opts.scoutRoute.reason == "quota_eligibility_changed")), opts, run)
 	if err != nil {
 		end = runEnd{status: StatusFailed, reason: err.Error()}
 	}
@@ -238,6 +254,33 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 	defer cancel()
 	// The process has exited and the Runner saw it happen.
 	_ = r.Store.SetLiveness(finalCtx, taskID, LivenessIdle)
+	if end.claudeAllowed {
+		_, _ = r.Store.clearQuotaObservedBefore(finalCtx, "claude", quotaReadStarted)
+	}
+	quotaRecorded := end.quota == nil
+	if end.quota != nil {
+		if end.quota.ResetsAt.IsZero() && r.QuotaUnknownResetAfter > 0 {
+			end.quota.ResetsAt = r.Store.now().Add(r.QuotaUnknownResetAfter)
+		}
+		quotaRecorded = r.Store.recordQuotaExhaustion(finalCtx, taskID, *end.quota) == nil
+		if !quotaRecorded {
+			end.reason += "; could not persist quota state"
+		}
+	}
+	if quotaRecorded && end.quota != nil && ctx.Err() == nil && strings.TrimSpace(opts.Instruction) == "" {
+		backend, model := r.quotaFallback(finalCtx, task, fresh, opts, end.quota)
+		var final Task
+		var err error
+		if backend != "" {
+			final, err = r.Store.requeueQuotaTransfer(finalCtx, task, end.quota.Backend, backend, model)
+		} else {
+			final, err = r.Store.requeueQuotaWait(finalCtx, task, end.quota.Backend)
+		}
+		if err == nil {
+			return RunResult{Task: final, Outcome: OutcomeRequeued, Reason: final.StatusReason, Usage: end.usage, Quota: end.quota}, nil
+		}
+		end.reason += "; could not requeue after quota exhaustion"
+	}
 	final, err := r.Store.transition(finalCtx, taskID, end.status, end.reason, end.requested)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("fleet: record end of run for task %s (%s: %s): %w", taskID, end.status, end.reason, err)
@@ -249,6 +292,7 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 		Text:       end.text,
 		Usage:      end.usage,
 		ReportPath: end.reportPath,
+		Quota:      end.quota,
 	}, nil
 }
 
@@ -267,8 +311,10 @@ func outcomeFor(status Status) Outcome {
 
 // runEnd is where a run leaves its task.
 type runEnd struct {
-	status Status
-	reason string
+	claudeAllowed bool
+	quota         *QuotaExhaustion
+	status        Status
+	reason        string
 	// requested is true when the run ended because a stop was asked for.
 	requested  bool
 	text       string
@@ -297,20 +343,43 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	}
 	binary := r.binary()
 	codex := task.Shape == ShapeScout && r.CodexScoutBinary != ""
-	if codex {
-		if firstNonEmpty(strings.TrimSpace(opts.Instruction), strings.TrimSpace(task.Goal)) == "" {
-			return runEnd{}, errors.New("Codex Scout requires a written goal for offline investigation")
+	codexTask := *task
+	if task.Shape == ShapeScout {
+		usdLimited := r.scoutUSDLimited(*task, project)
+		if task.quotaBackend != "" && opts.scoutRoute == nil {
+			codex = task.quotaBackend == "codex"
+			if codex && r.CodexScoutBinary == "" {
+				return runEnd{}, errors.New("queued quota transfer requires a configured Codex Scout")
+			}
+			codexTask.Model = task.quotaModel
+			if task.quotaBackend == "claude" && task.quotaModel != "" {
+				task.Model = task.quotaModel
+			}
+		} else if opts.scoutRoute != nil {
+			codex = opts.scoutRoute.backend == "codex"
+			codexTask.Model = opts.scoutRoute.model
+			if opts.scoutRoute.reason != "" {
+				r.record(ctx, task.ID, "scout.backend", map[string]string{"backend": opts.scoutRoute.backend, "reason": opts.scoutRoute.reason})
+			}
+		} else if r.ScoutRoute != nil {
+			codex, codexTask.Model = r.ScoutRoute(ctx, *task, usdLimited)
+		} else if usdLimited {
+			codex = false
 		}
-		if task.Budget.CostUSD > 0 || project.Budget.Task.CostUSD > 0 || project.Budget.Daily.CostUSD > 0 ||
-			(r.Budget != nil && (r.Budget.Task.CostUSD > 0 || r.Budget.ProjectDaily.CostUSD > 0 || r.Budget.Daily.CostUSD > 0)) {
-			return runEnd{}, errors.New("Codex Scout does not report USD usage and cannot run with a USD budget")
+		if codex {
+			if firstNonEmpty(strings.TrimSpace(opts.Instruction), strings.TrimSpace(task.Goal)) == "" {
+				return runEnd{}, errors.New("Codex Scout requires a written goal for offline investigation")
+			}
+			if usdLimited {
+				return runEnd{}, errors.New("Codex Scout does not report USD usage and cannot run with a USD budget")
+			}
+			binary = r.CodexScoutBinary
+			sessionID = ""
 		}
-		binary = r.CodexScoutBinary
-		sessionID = ""
 	}
 	args := r.buildArgs(*task, sessionID, r.prompt(*task, sessionID, opts))
 	if codex {
-		args = r.codexScoutArgs(*task, opts)
+		args = r.codexScoutArgs(codexTask, opts)
 	}
 	timeout := r.RunTimeout
 	if timeout <= 0 {
@@ -350,7 +419,7 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 
 	var stream streamSummary
 	if codex {
-		stream = r.consumeCodexScout(ctx, task, stdout)
+		stream = r.consumeCodexScout(ctx, &codexTask, stdout)
 	} else {
 		stream = r.consume(ctx, task, stdout)
 	}
@@ -358,12 +427,33 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	run.finish()
 	elapsed := time.Since(started)
 
-	end := runEnd{usage: stream.usage}
+	end := runEnd{usage: stream.usage, claudeAllowed: stream.claudeAllowed}
 	if stream.result != nil {
 		end.text = strings.TrimSpace(stream.result.Result)
 	}
 	mode, stopReason := run.stopped()
 	exitDetail := strings.TrimSpace(stderr.String())
+
+	var quota *QuotaExhaustion
+	failed := waitErr != nil || stream.result == nil || stream.result.IsError
+	if failed && mode == stopNone && ctx.Err() == nil && !(waitErr != nil && elapsed >= timeout) {
+		quota = stream.quota
+		if quota == nil && r.MatchQuotaError != nil {
+			backend := "claude"
+			if codex {
+				backend = "codex"
+			}
+			diagnostic := exitDetail
+			if stream.result != nil && stream.result.IsError {
+				diagnostic = strings.TrimSpace(end.text + "\n" + exitDetail)
+			}
+			if diagnostic != "" {
+				if exhausted, resetsAt := r.MatchQuotaError(backend, diagnostic); exhausted {
+					quota = &QuotaExhaustion{Backend: backend, ResetsAt: resetsAt}
+				}
+			}
+		}
+	}
 
 	switch {
 	case mode == stopCancel:
@@ -374,6 +464,8 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 		end.status, end.reason = StatusNeedsDecision, runnerStoppedPrefix+ctx.Err().Error()
 	case waitErr != nil && elapsed >= timeout:
 		end.status, end.reason = StatusNeedsDecision, "timed out after "+timeout.String()
+	case quota != nil:
+		end.status, end.reason, end.quota = StatusNeedsDecision, quota.Backend+" quota exhausted", quota
 	case stream.result == nil:
 		detail := exitDetail
 		if detail == "" && waitErr != nil {
@@ -541,6 +633,11 @@ func (r *Runner) writeReport(task Task, text string) (string, error) {
 // agentEvent is one line of the agent's stream-json output. Unknown event
 // types and fields are ignored, so new CLI versions do not break the runner.
 type agentEvent struct {
+	RateLimitInfo *struct {
+		Status      string   `json:"status"`
+		ResetsAt    int64    `json:"resetsAt"`
+		Utilization *float64 `json:"utilization"`
+	} `json:"rate_limit_info"`
 	Type      string `json:"type"`
 	Subtype   string `json:"subtype"`
 	SessionID string `json:"session_id"`
@@ -572,9 +669,11 @@ type agentBlock struct {
 }
 
 type streamSummary struct {
-	sessionID string
-	result    *agentEvent
-	usage     Usage
+	claudeAllowed bool
+	quota         *QuotaExhaustion
+	sessionID     string
+	result        *agentEvent
+	usage         Usage
 }
 
 // Limits on what one event stores, so a single large write cannot bloat the log.
@@ -590,6 +689,7 @@ func (r *Runner) consume(ctx context.Context, task *Task, stdout interface{ Read
 	// still part of the task's history.
 	recCtx := context.WithoutCancel(ctx)
 	var sum streamSummary
+	model := firstNonEmpty(task.Model, r.DefaultModel)
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxStreamLine)
@@ -613,8 +713,30 @@ func (r *Runner) consume(ctx context.Context, task *Task, stdout interface{ Read
 		}
 
 		switch ev.Type {
+		case "rate_limit_event":
+			if info := ev.RateLimitInfo; info != nil {
+				now := r.Store.now()
+				reset := time.Unix(info.ResetsAt, 0).UTC()
+				if info.Utilization != nil && *info.Utilization >= 0 && *info.Utilization <= 1 && reset.After(now) {
+					_ = r.Store.recordProviderQuotaMeasurement(recCtx, "claude", providerQuotaSnapshot{
+						remaining: 1 - *info.Utilization, resetAt: reset,
+					}, now)
+				}
+				switch info.Status {
+				case "rejected":
+					sum.claudeAllowed = false
+					sum.quota = &QuotaExhaustion{Backend: "claude"}
+					if info.ResetsAt > 0 {
+						sum.quota.ResetsAt = time.Unix(info.ResetsAt, 0).UTC()
+					}
+				case "allowed", "allowed_warning":
+					sum.quota = nil
+					sum.claudeAllowed = true
+				}
+			}
 		case "system":
 			if ev.Subtype == "init" {
+				model = firstNonEmpty(ev.Model, model)
 				r.record(recCtx, task.ID, EventAgentInit, map[string]any{"session_id": ev.SessionID, "model": ev.Model})
 			}
 		case "assistant":
@@ -652,7 +774,7 @@ func (r *Runner) consume(ctx context.Context, task *Task, stdout interface{ Read
 				OutputTokens: ev.Usage.OutputTokens,
 				CostUSD:      ev.TotalCostUSD,
 			}
-			_ = r.Store.AddUsage(recCtx, task.ID, sum.usage)
+			_ = r.Store.AddBackendUsage(recCtx, task.ID, "claude", model, sum.usage)
 			r.record(recCtx, task.ID, EventAgentResult, map[string]any{
 				"subtype": ev.Subtype, "is_error": ev.IsError, "num_turns": ev.NumTurns,
 				"duration_ms": ev.DurationMs, "cost_usd": ev.TotalCostUSD,

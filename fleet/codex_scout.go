@@ -61,7 +61,7 @@ func (r *Runner) consumeCodexScout(ctx context.Context, task *Task, stdout io.Re
 			usage := Usage{InputTokens: event.Usage.Input, OutputTokens: event.Usage.Output}
 			summary.usage.InputTokens += usage.InputTokens
 			summary.usage.OutputTokens += usage.OutputTokens
-			_ = r.Store.AddUsage(ctx, task.ID, usage)
+			_ = r.Store.AddBackendUsage(ctx, task.ID, "codex", firstNonEmpty(task.Model, r.CodexScoutModel), usage)
 			r.record(ctx, task.ID, EventAgentResult, map[string]any{
 				"backend": "codex", "input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens,
 			})
