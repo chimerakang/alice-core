@@ -242,6 +242,7 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 
 	// From here on the task is ours and must leave "running" whatever
 	// happens, including after ctx is cancelled.
+	quotaReadStarted := r.Store.now()
 	end, err := r.execute(ctx, &task, fresh, opts, run)
 	if err != nil {
 		end = runEnd{status: StatusFailed, reason: err.Error()}
@@ -251,6 +252,9 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 	defer cancel()
 	// The process has exited and the Runner saw it happen.
 	_ = r.Store.SetLiveness(finalCtx, taskID, LivenessIdle)
+	if end.claudeAllowed {
+		_, _ = r.Store.clearQuotaObservedBefore(finalCtx, "claude", quotaReadStarted)
+	}
 	quotaRecorded := end.quota == nil
 	if end.quota != nil {
 		quotaRecorded = r.Store.recordQuotaExhaustion(finalCtx, taskID, *end.quota) == nil
@@ -296,9 +300,10 @@ func outcomeFor(status Status) Outcome {
 
 // runEnd is where a run leaves its task.
 type runEnd struct {
-	quota  *QuotaExhaustion
-	status Status
-	reason string
+	claudeAllowed bool
+	quota         *QuotaExhaustion
+	status        Status
+	reason        string
 	// requested is true when the run ended because a stop was asked for.
 	requested  bool
 	text       string
@@ -409,7 +414,7 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	run.finish()
 	elapsed := time.Since(started)
 
-	end := runEnd{usage: stream.usage}
+	end := runEnd{usage: stream.usage, claudeAllowed: stream.claudeAllowed}
 	if stream.result != nil {
 		end.text = strings.TrimSpace(stream.result.Result)
 	}
@@ -650,10 +655,11 @@ type agentBlock struct {
 }
 
 type streamSummary struct {
-	quota     *QuotaExhaustion
-	sessionID string
-	result    *agentEvent
-	usage     Usage
+	claudeAllowed bool
+	quota         *QuotaExhaustion
+	sessionID     string
+	result        *agentEvent
+	usage         Usage
 }
 
 // Limits on what one event stores, so a single large write cannot bloat the log.
@@ -697,12 +703,14 @@ func (r *Runner) consume(ctx context.Context, task *Task, stdout interface{ Read
 			if info := ev.RateLimitInfo; info != nil {
 				switch info.Status {
 				case "rejected":
+					sum.claudeAllowed = false
 					sum.quota = &QuotaExhaustion{Backend: "claude"}
 					if info.ResetsAt > 0 {
 						sum.quota.ResetsAt = time.Unix(info.ResetsAt, 0).UTC()
 					}
 				case "allowed", "allowed_warning":
 					sum.quota = nil
+					sum.claudeAllowed = true
 				}
 			}
 		case "system":

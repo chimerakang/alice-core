@@ -100,6 +100,14 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		return err
 	}
 
+	if s.Runner.CodexScoutBinary != "" {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.refreshCodexQuota(ctx)
+		}()
+	}
+
 	ticker := time.NewTicker(s.pollInterval())
 	defer ticker.Stop()
 	for {

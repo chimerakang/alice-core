@@ -226,6 +226,7 @@ var schema = []string{
 // addedColumns are columns introduced after a table first shipped. CREATE
 // TABLE IF NOT EXISTS leaves an existing table alone, so they are added here.
 var addedColumns = []struct{ table, column, definition string }{
+	{"fleet_backend_quota", "observed_at", "INTEGER NOT NULL DEFAULT 0"},
 	{"fleet_tasks", "quota_backend", "TEXT NOT NULL DEFAULT ''"},
 	{"fleet_tasks", "quota_model", "TEXT NOT NULL DEFAULT ''"},
 	{"fleet_tasks", "quota_transfers", "INTEGER NOT NULL DEFAULT 0"},

@@ -32,6 +32,25 @@ func (s *Store) ClearBackendQuota(ctx context.Context, backend string) error {
 	return err
 }
 
+func (s *Store) clearQuotaObservedBefore(ctx context.Context, backend string, before time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM fleet_backend_quota WHERE backend = ? AND observed_at < ?`, backend, toMillis(before))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+func (s *Store) recordCodexQuotaDenied(ctx context.Context, observedBefore time.Time) error {
+	observed := toMillis(observedBefore)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO fleet_backend_quota (backend, reset_at, observed_at) VALUES ('codex', NULL, ?)
+		ON CONFLICT(backend) DO UPDATE SET
+			observed_at = excluded.observed_at,
+			reset_at = NULL
+		WHERE fleet_backend_quota.observed_at < excluded.observed_at`, observed)
+	return err
+}
+
 func (s *Store) recordQuotaExhaustion(ctx context.Context, taskID string, quota QuotaExhaustion) error {
 	return s.inTx(ctx, func(tx querier) error {
 		var reset any
@@ -39,11 +58,11 @@ func (s *Store) recordQuotaExhaustion(ctx context.Context, taskID string, quota 
 		if !quota.ResetsAt.IsZero() {
 			reset = toMillis(quota.ResetsAt)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO fleet_backend_quota (backend, reset_at) VALUES (?, ?)
-			ON CONFLICT(backend) DO UPDATE SET reset_at = CASE
+		if _, err := tx.ExecContext(ctx, `INSERT INTO fleet_backend_quota (backend, reset_at, observed_at) VALUES (?, ?, ?)
+			ON CONFLICT(backend) DO UPDATE SET observed_at = excluded.observed_at, reset_at = CASE
 				WHEN excluded.reset_at IS NULL AND fleet_backend_quota.reset_at > ? THEN fleet_backend_quota.reset_at
 				ELSE excluded.reset_at
-			END`, quota.Backend, reset, now); err != nil {
+			END`, quota.Backend, reset, now, now); err != nil {
 			return err
 		}
 		_, err := appendEvent(ctx, tx, taskID, EventQuotaExhausted, quota, now)
