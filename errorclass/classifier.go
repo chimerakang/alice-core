@@ -26,20 +26,12 @@
 // MUST NOT grow its own pattern list — they delegate to ClassifyText
 // or use typed errors instead:
 //
-//   - engine.handlePlanningError uses typed errors
-//     (hermes.ErrPlannerJSONFailed / ErrPlannerEmptyPlan) — the type
-//     IS the classification. Not a string classifier.
-//   - hermes.PlannerSession.Plan retries JSON parse failures via its
-//     own internal counter (MaxPlannerJSONRetries). The "is JSON
-//     valid?" question is local; transient/env classification of the
-//     planner's transport errors uses errorclass via the recovery
-//     decider.
 //   - app.classifyError (Telegram-side UX label) layers UX-only
 //     categories (cancelled, tool_file_patch, permission, not_found)
 //     on top of errorclass for the transient/env subset; it does
 //     not re-implement the transient pattern list.
-//   - engine.isTransientRecoveryError + hermes.ClassifyFailure are
-//     thin wrappers around ClassifyText.IsTransient / IsEnv.
+//   - chat.isTransientRecoveryError is a thin wrapper around
+//     ClassifyText.IsTransient.
 //
 // If you find yourself reaching for `strings.Contains(err.Error(),
 // "rate limit")` or similar in a new file, add a Class here instead

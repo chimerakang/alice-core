@@ -31,7 +31,6 @@ type Artifact struct {
 type Result struct {
 	Text                     string
 	Artifacts                []Artifact
-	Review                   *ReviewResult
 	InputTokens              int
 	OutputTokens             int
 	Cost                     float64
@@ -39,9 +38,8 @@ type Result struct {
 	CacheReadInputTokens     int // session-cached prefix read on this call (#149)
 	CacheCreationInputTokens int // new content written to cache on this call (#149)
 	// Model is the actual model that produced Text (e.g. "claude-sonnet-4-5",
-	// "gpt-5.5"). Empty when the runner can't report it. PlanExecuteEngine
-	// uses this to attribute Executor tokens to the right model in the
-	// per-model breakdown summary.
+	// "gpt-5.5"). Empty when the runner can't report it. Callers use this
+	// to attribute tokens to the right model.
 	Model string
 }
 
@@ -61,7 +59,7 @@ func (r Result) TokenVolume() int {
 // type-asserts to this interface and populates Result.Model + tokens + Cost
 // when available — falling back to zero values for runners that don't
 // implement it. Cost is the per-call USD figure (#148 1B/1D), not a session
-// cumulative — Hermes summary sums it directly.
+// cumulative, so callers can sum it directly.
 type DirectRunnerMetrics interface {
 	LastCallMetrics() (model string, inTokens, outTokens int, cost float64)
 }
