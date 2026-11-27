@@ -17,8 +17,9 @@ const (
 )
 
 type startupResume struct {
-	task    Task
-	attempt int
+	task          Task
+	attempt       int
+	statusEventID int64
 }
 
 func stoppedDuringServiceShutdown(reason string) bool {
@@ -62,7 +63,7 @@ func (s *Scheduler) findStartupResumes(ctx context.Context) (map[string]startupR
 			return nil, err
 		}
 		if attempts < s.StartupResumeLimit {
-			resumes[task.ID] = startupResume{task: task, attempt: attempts + 1}
+			resumes[task.ID] = startupResume{task: task, attempt: attempts + 1, statusEventID: stopped.ID}
 			continue
 		}
 		capped, ok, err := s.Store.LastEvent(ctx, task.ID, EventStartupResumeCapped)

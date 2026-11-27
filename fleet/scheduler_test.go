@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -540,7 +541,7 @@ func TestSchedulerStartupResumesOnlyServiceStops(t *testing.T) {
 	s = e.scheduler(1)
 	s.StartupResumeLimit = 1
 	stop = e.startScheduler(s)
-	defer stop()
+	t.Cleanup(func() { stop() })
 	e.waitUntil("startup resume reaches review", func() bool {
 		task, err := e.store.GetTask(ctx, resumable.ID)
 		other, otherErr := e.store.GetTask(ctx, second.ID)
@@ -567,5 +568,58 @@ func TestSchedulerStartupResumesOnlyServiceStops(t *testing.T) {
 	}
 	if args := e.args(1); !strings.Contains(strings.Join(args, " "), "--resume existing-session") {
 		t.Fatalf("resume args = %v", args)
+	}
+
+	stop()
+	sentinel := e.task(NewTask{ProjectID: "app", Goal: "Run after another restart"})
+	stop = e.startScheduler(s)
+	e.waitUntil("scheduler finishes a task after the second start", func() bool {
+		task, err := e.store.GetTask(ctx, sentinel.ID)
+		return err == nil && task.Status == StatusReviewReady
+	})
+	audit, err = e.store.ListAudit(ctx, AuditFilter{TaskID: resumable.ID, Actor: "system"})
+	if err != nil || len(audit) != 1 {
+		t.Fatalf("repeated startup scheduled the same task: %+v, %v", audit, err)
+	}
+
+}
+
+func TestStartupResumeRejectsNewerStatusAtSameTimestamp(t *testing.T) {
+	e := newRunnerEnv(t)
+	stamp := time.Now()
+	e.store.now = func() time.Time { return stamp }
+	task := e.task(NewTask{ProjectID: "app", Goal: "Check the startup claim"})
+	if err := e.store.SetSession(ctx, task.ID, "existing-session"); err != nil {
+		t.Fatal(err)
+	}
+	reason := runnerStoppedPrefix + "context canceled"
+	if _, err := e.store.Transition(ctx, task.ID, StatusRunning, "old run"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.store.Transition(ctx, task.ID, StatusNeedsDecision, reason); err != nil {
+		t.Fatal(err)
+	}
+	s := e.scheduler(1)
+	s.StartupResumeLimit = 1
+	resumes, err := s.findStartupResumes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resume, ok := resumes[task.ID]
+	if !ok {
+		t.Fatal("expected startup candidate")
+	}
+
+	if _, err := e.store.Transition(ctx, task.ID, StatusRunning, "operator resumed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.store.transition(ctx, task.ID, StatusNeedsDecision, reason, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.store.transitionStartupResume(ctx, task.ID, &resume); !errors.Is(err, ErrConflict) {
+		t.Fatalf("startup claim after operator interruption: %v", err)
+	}
+	if _, ok, err := e.store.LastEvent(ctx, task.ID, EventStartupResumed); err != nil || ok {
+		t.Fatalf("stale startup claim wrote a resume event: %v, %v", ok, err)
 	}
 }

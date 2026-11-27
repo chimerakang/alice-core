@@ -238,6 +238,16 @@ func (s *Store) transitionWithStartupResume(ctx context.Context, taskID string, 
 			current.StatusReason != resume.task.StatusReason || current.SessionID != resume.task.SessionID) {
 			return fmt.Errorf("%w: task %s changed since startup recovery", ErrConflict, taskID)
 		}
+		if resume != nil {
+			var lastStatusID int64
+			if err := tx.QueryRowContext(ctx, `SELECT MAX(id) FROM fleet_task_events WHERE task_id = ? AND type = ?`,
+				taskID, EventStatus).Scan(&lastStatusID); err != nil {
+				return fmt.Errorf("fleet: read startup recovery status event: %w", err)
+			}
+			if lastStatusID != resume.statusEventID {
+				return fmt.Errorf("%w: task %s has a newer status event", ErrConflict, taskID)
+			}
+		}
 		if !to.Valid() || !CanTransition(current.Status, to) {
 			return &TransitionError{TaskID: taskID, From: current.Status, To: to}
 		}

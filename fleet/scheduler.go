@@ -90,13 +90,14 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		s.OnRecovery(report)
 	}
 
+	s.mu.Lock()
+	s.startupResumes = nil
 	if s.StartupResumeLimit > 0 {
-		s.mu.Lock()
 		s.startupResumes, err = s.findStartupResumes(ctx)
-		s.mu.Unlock()
-		if err != nil {
-			return err
-		}
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return err
 	}
 
 	ticker := time.NewTicker(s.pollInterval())
