@@ -228,6 +228,14 @@ func (s *Store) transition(ctx context.Context, taskID string, to Status, reason
 }
 
 func (s *Store) transitionWithStartupResume(ctx context.Context, taskID string, to Status, reason string, requested bool, resume *startupResume) (Task, error) {
+	return s.transitionTask(ctx, taskID, to, reason, requested, resume, nil)
+}
+
+func (s *Store) transitionWithModel(ctx context.Context, taskID string, to Status, reason string, requested bool, change *RetryModel) (Task, error) {
+	return s.transitionTask(ctx, taskID, to, reason, requested, nil, change)
+}
+
+func (s *Store) transitionTask(ctx context.Context, taskID string, to Status, reason string, requested bool, resume *startupResume, change *RetryModel) (Task, error) {
 	var out Task
 	err := s.inTx(ctx, func(tx querier) error {
 		current, err := getTask(ctx, tx, taskID)
@@ -269,7 +277,14 @@ func (s *Store) transitionWithStartupResume(ctx context.Context, taskID string, 
 			finished = "?"
 			args = append(args, now)
 		}
-		args = append(args, taskID, string(current.Status))
+		model := current.Model
+		if change != nil {
+			if current.Model != change.ExpectedModel {
+				return fmt.Errorf("%w: task %s model changed", ErrConflict, taskID)
+			}
+			model = change.Model
+		}
+		args = append(args, model, taskID, string(current.Status))
 
 		targetBranch := "target_branch"
 		if to == StatusRunning {
@@ -277,7 +292,7 @@ func (s *Store) transitionWithStartupResume(ctx context.Context, taskID string, 
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE fleet_tasks SET
 			status = ?, status_reason = ?, updated_at = ?,
-			started_at = `+started+`, finished_at = `+finished+`, target_branch = `+targetBranch+`
+			started_at = `+started+`, finished_at = `+finished+`, target_branch = `+targetBranch+`, model = ?
 			WHERE id = ? AND status = ?`, args...)
 		if err != nil {
 			return fmt.Errorf("fleet: update task status: %w", err)
@@ -292,6 +307,11 @@ func (s *Store) transitionWithStartupResume(ctx context.Context, taskID string, 
 		if resume != nil {
 			if _, err := appendEvent(ctx, tx, taskID, EventStartupResumed,
 				map[string]any{"attempt": resume.attempt, "reason": current.StatusReason, "actor": "system"}, now); err != nil {
+				return err
+			}
+		}
+		if change != nil && len(change.Event) != 0 {
+			if _, err := appendEvent(ctx, tx, taskID, EventModelSelected, change.Event, now); err != nil {
 				return err
 			}
 		}

@@ -41,6 +41,8 @@ type Runner struct {
 	// CodexScoutBinary enables Codex for scouts. Ship still uses Binary.
 	CodexScoutBinary string
 	CodexScoutModel  string
+	// ScoutRoute optionally selects the backend and model per Scout.
+	ScoutRoute func(context.Context, Task, bool) (useCodex bool, model string)
 	// DefaultModel is used for tasks that do not name a model. Empty lets
 	// the CLI choose.
 	DefaultModel string
@@ -297,20 +299,27 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	}
 	binary := r.binary()
 	codex := task.Shape == ShapeScout && r.CodexScoutBinary != ""
-	if codex {
-		if firstNonEmpty(strings.TrimSpace(opts.Instruction), strings.TrimSpace(task.Goal)) == "" {
-			return runEnd{}, errors.New("Codex Scout requires a written goal for offline investigation")
+	codexTask := *task
+	if task.Shape == ShapeScout {
+		usdLimited := task.Budget.CostUSD > 0 || project.Budget.Task.CostUSD > 0 || project.Budget.Daily.CostUSD > 0 ||
+			(r.Budget != nil && (r.Budget.Task.CostUSD > 0 || r.Budget.ProjectDaily.CostUSD > 0 || r.Budget.Daily.CostUSD > 0))
+		if r.ScoutRoute != nil {
+			codex, codexTask.Model = r.ScoutRoute(ctx, *task, usdLimited)
 		}
-		if task.Budget.CostUSD > 0 || project.Budget.Task.CostUSD > 0 || project.Budget.Daily.CostUSD > 0 ||
-			(r.Budget != nil && (r.Budget.Task.CostUSD > 0 || r.Budget.ProjectDaily.CostUSD > 0 || r.Budget.Daily.CostUSD > 0)) {
-			return runEnd{}, errors.New("Codex Scout does not report USD usage and cannot run with a USD budget")
+		if codex {
+			if firstNonEmpty(strings.TrimSpace(opts.Instruction), strings.TrimSpace(task.Goal)) == "" {
+				return runEnd{}, errors.New("Codex Scout requires a written goal for offline investigation")
+			}
+			if usdLimited {
+				return runEnd{}, errors.New("Codex Scout does not report USD usage and cannot run with a USD budget")
+			}
+			binary = r.CodexScoutBinary
+			sessionID = ""
 		}
-		binary = r.CodexScoutBinary
-		sessionID = ""
 	}
 	args := r.buildArgs(*task, sessionID, r.prompt(*task, sessionID, opts))
 	if codex {
-		args = r.codexScoutArgs(*task, opts)
+		args = r.codexScoutArgs(codexTask, opts)
 	}
 	timeout := r.RunTimeout
 	if timeout <= 0 {
