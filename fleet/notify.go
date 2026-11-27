@@ -415,6 +415,9 @@ func (n *Notifier) whileAway(ctx context.Context, prefs NotifyPrefs, w Wake) (Di
 		if err != nil || already > 0 {
 			return Held, "already resumed once while away"
 		}
+		if n.Commander.Scheduler.automaticResumePaused(ctx, w.TaskID) {
+			return Held, "awaiting external confirmation"
+		}
 		if _, err := n.Commander.Reply(ctx, actor, ReplyRequest{TaskID: w.TaskID}); err != nil {
 			return Held, "could not resume automatically: " + err.Error()
 		}

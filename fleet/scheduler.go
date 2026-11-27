@@ -37,6 +37,8 @@ type Scheduler struct {
 	MaxConcurrent int
 	// StartupResumeLimit caps automatic recovery attempts per task. Zero disables them.
 	StartupResumeLimit int
+	// PauseAutomaticResume lets an embedding application hold a task for external input.
+	PauseAutomaticResume func(context.Context, string) bool
 	// PollInterval is how often the queue is re-examined when nothing wakes
 	// the scheduler sooner. Zero means DefaultPollInterval.
 	PollInterval time.Duration
@@ -204,7 +206,7 @@ func (s *Scheduler) Tick(ctx context.Context) ([]string, error) {
 		}
 		remaining := make(map[string]startupResume, len(s.startupResumes))
 		for _, task := range waiting {
-			if resume, ok := s.startupResumes[task.ID]; ok && task.UpdatedAt.Equal(resume.task.UpdatedAt) {
+			if resume, ok := s.startupResumes[task.ID]; ok && task.UpdatedAt.Equal(resume.task.UpdatedAt) && !s.automaticResumePaused(ctx, task.ID) {
 				remaining[task.ID] = resume
 				candidates = append(candidates, task)
 			}

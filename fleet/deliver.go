@@ -29,6 +29,10 @@ type Deliverer struct {
 	Store *Store
 	// Forge opens and merges pull requests. Defaults to GitHub via gh.
 	Forge Forge
+	// RequireDirectPRReview keeps a delivered task reviewable until acceptance.
+	RequireDirectPRReview func(context.Context, string) bool
+	// BeforeLanding validates application-specific acceptance requirements.
+	BeforeLanding func(context.Context, string) error
 }
 
 // Event types written by the Deliverer.
@@ -165,7 +169,7 @@ func (d *Deliverer) Deliver(ctx context.Context, taskID string) (Delivery, error
 		_, _ = d.Store.AppendEvent(recCtx, taskID, EventDeliveryPROpened, map[string]any{"url": url, "number": number})
 	}
 
-	if task.TrustMode == TrustDirectPR {
+	if task.TrustMode == TrustDirectPR && (d.RequireDirectPRReview == nil || !d.RequireDirectPRReview(recCtx, taskID)) {
 		// Opening the pull request is the whole job in this mode.
 		out.Task, err = d.Store.Transition(recCtx, taskID, StatusDone, "pull request opened: "+out.PRURL)
 		if err != nil {
@@ -200,6 +204,11 @@ func (d *Deliverer) Approve(ctx context.Context, taskID, approver string) (Task,
 	}
 	if task.Status != StatusReviewReady || task.Shape != ShapeShip {
 		return Task{}, fmt.Errorf("%w: task %s is a %s task in %s", ErrNothingToApprove, taskID, task.Shape, task.Status)
+	}
+	if d.BeforeLanding != nil {
+		if err := d.BeforeLanding(ctx, taskID); err != nil {
+			return Task{}, err
+		}
 	}
 	project, err := d.Store.GetProject(ctx, task.ProjectID)
 	if err != nil {
@@ -248,19 +257,29 @@ func (d *Deliverer) Merge(ctx context.Context, taskID, approver string) (Task, e
 	if err != nil {
 		return Task{}, err
 	}
-	if task.Status == StatusReviewReady {
+	directReview := task.Status == StatusReviewReady && task.TrustMode == TrustDirectPR
+	if task.Status == StatusReviewReady && !directReview {
 		return d.Approve(ctx, taskID, approver)
 	}
-	if task.Status != StatusDone || task.PRNumber == 0 {
+	if (task.Status != StatusDone && !directReview) || task.PRNumber == 0 {
 		return Task{}, fmt.Errorf("%w: task %s is %s and has no open pull request to merge", ErrNothingToApprove, taskID, task.Status)
+	}
+	if d.BeforeLanding != nil {
+		if err := d.BeforeLanding(ctx, taskID); err != nil {
+			return Task{}, err
+		}
 	}
 	if err := d.forge().MergePullRequest(ctx, task.WorktreePath, task.PRNumber); err != nil {
 		return Task{}, err
 	}
 	approver = firstNonEmpty(strings.TrimSpace(approver), "owner")
-	_, _ = d.Store.AppendEvent(context.WithoutCancel(ctx), taskID, EventDeliveryApproved,
+	recCtx := context.WithoutCancel(ctx)
+	_, _ = d.Store.AppendEvent(recCtx, taskID, EventDeliveryApproved,
 		map[string]any{"approver": approver, "landed": "merged " + task.PRURL})
-	return d.Store.GetTask(ctx, taskID)
+	if directReview {
+		return d.Store.Transition(recCtx, taskID, StatusDone, "approved by "+approver+": merged "+task.PRURL)
+	}
+	return d.Store.GetTask(recCtx, taskID)
 }
 
 // fastForward moves the project's default branch to branch without creating
