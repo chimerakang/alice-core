@@ -43,6 +43,8 @@ type Runner struct {
 	CodexScoutModel  string
 	// ScoutRoute optionally selects the backend and model per Scout.
 	ScoutRoute func(context.Context, Task, bool) (useCodex bool, model string)
+	// MatchQuotaError optionally recognizes provider-specific diagnostics from a failed run.
+	MatchQuotaError func(backend, diagnostic string) (exhausted bool, resetsAt time.Time)
 	// DefaultModel is used for tasks that do not name a model. Empty lets
 	// the CLI choose.
 	DefaultModel string
@@ -127,6 +129,8 @@ type RunOptions struct {
 
 // RunResult describes a finished run.
 type RunResult struct {
+	// Quota is set when the provider rejected a failed run for lack of capacity.
+	Quota *QuotaExhaustion
 	// Task is the task as stored after the run.
 	Task    Task
 	Outcome Outcome
@@ -251,6 +255,7 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 		Text:       end.text,
 		Usage:      end.usage,
 		ReportPath: end.reportPath,
+		Quota:      end.quota,
 	}, nil
 }
 
@@ -269,6 +274,7 @@ func outcomeFor(status Status) Outcome {
 
 // runEnd is where a run leaves its task.
 type runEnd struct {
+	quota  *QuotaExhaustion
 	status Status
 	reason string
 	// requested is true when the run ended because a stop was asked for.
@@ -374,6 +380,27 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	mode, stopReason := run.stopped()
 	exitDetail := strings.TrimSpace(stderr.String())
 
+	var quota *QuotaExhaustion
+	failed := waitErr != nil || stream.result == nil || stream.result.IsError
+	if failed && mode == stopNone && ctx.Err() == nil && !(waitErr != nil && elapsed >= timeout) {
+		quota = stream.quota
+		if quota == nil && r.MatchQuotaError != nil {
+			backend := "claude"
+			if codex {
+				backend = "codex"
+			}
+			diagnostic := exitDetail
+			if stream.result != nil && stream.result.IsError {
+				diagnostic = strings.TrimSpace(end.text + "\n" + exitDetail)
+			}
+			if diagnostic != "" {
+				if exhausted, resetsAt := r.MatchQuotaError(backend, diagnostic); exhausted {
+					quota = &QuotaExhaustion{Backend: backend, ResetsAt: resetsAt}
+				}
+			}
+		}
+	}
+
 	switch {
 	case mode == stopCancel:
 		end.status, end.reason, end.requested = StatusCancelled, stopReason, true
@@ -383,6 +410,9 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 		end.status, end.reason = StatusNeedsDecision, runnerStoppedPrefix+ctx.Err().Error()
 	case waitErr != nil && elapsed >= timeout:
 		end.status, end.reason = StatusNeedsDecision, "timed out after "+timeout.String()
+	case quota != nil:
+		end.status, end.reason, end.quota = StatusNeedsDecision, quota.Backend+" quota exhausted", quota
+		r.record(context.WithoutCancel(ctx), task.ID, EventQuotaExhausted, quota)
 	case stream.result == nil:
 		detail := exitDetail
 		if detail == "" && waitErr != nil {
@@ -550,6 +580,10 @@ func (r *Runner) writeReport(task Task, text string) (string, error) {
 // agentEvent is one line of the agent's stream-json output. Unknown event
 // types and fields are ignored, so new CLI versions do not break the runner.
 type agentEvent struct {
+	RateLimitInfo *struct {
+		Status   string `json:"status"`
+		ResetsAt int64  `json:"resetsAt"`
+	} `json:"rate_limit_info"`
 	Type      string `json:"type"`
 	Subtype   string `json:"subtype"`
 	SessionID string `json:"session_id"`
@@ -581,6 +615,7 @@ type agentBlock struct {
 }
 
 type streamSummary struct {
+	quota     *QuotaExhaustion
 	sessionID string
 	result    *agentEvent
 	usage     Usage
@@ -623,6 +658,18 @@ func (r *Runner) consume(ctx context.Context, task *Task, stdout interface{ Read
 		}
 
 		switch ev.Type {
+		case "rate_limit_event":
+			if info := ev.RateLimitInfo; info != nil {
+				switch info.Status {
+				case "rejected":
+					sum.quota = &QuotaExhaustion{Backend: "claude"}
+					if info.ResetsAt > 0 {
+						sum.quota.ResetsAt = time.Unix(info.ResetsAt, 0).UTC()
+					}
+				case "allowed", "allowed_warning":
+					sum.quota = nil
+				}
+			}
 		case "system":
 			if ev.Subtype == "init" {
 				model = firstNonEmpty(ev.Model, model)
