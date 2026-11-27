@@ -249,7 +249,14 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 	defer cancel()
 	// The process has exited and the Runner saw it happen.
 	_ = r.Store.SetLiveness(finalCtx, taskID, LivenessIdle)
-	if backend, model := r.quotaFallback(ctx, task, fresh, opts, end.quota); backend != "" {
+	quotaRecorded := end.quota == nil
+	if end.quota != nil {
+		quotaRecorded = r.Store.recordQuotaExhaustion(finalCtx, taskID, *end.quota) == nil
+		if !quotaRecorded {
+			end.reason += "; could not persist quota state"
+		}
+	}
+	if backend, model := r.quotaFallback(finalCtx, task, fresh, opts, end.quota); quotaRecorded && ctx.Err() == nil && backend != "" {
 		final, err := r.Store.requeueQuotaTransfer(finalCtx, task, end.quota.Backend, backend, model)
 		if err == nil {
 			return RunResult{Task: final, Outcome: OutcomeRequeued, Reason: final.StatusReason, Usage: end.usage, Quota: end.quota}, nil
@@ -433,7 +440,6 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 		end.status, end.reason = StatusNeedsDecision, "timed out after "+timeout.String()
 	case quota != nil:
 		end.status, end.reason, end.quota = StatusNeedsDecision, quota.Backend+" quota exhausted", quota
-		r.record(context.WithoutCancel(ctx), task.ID, EventQuotaExhausted, quota)
 	case stream.result == nil:
 		detail := exitDetail
 		if detail == "" && waitErr != nil {

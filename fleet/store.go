@@ -162,6 +162,10 @@ var schema = []string{
 	)`,
 	// Every increment of usage, so spending can be totalled per day. Task
 	// rows hold only running totals.
+	`CREATE TABLE IF NOT EXISTS fleet_backend_quota (
+		backend TEXT PRIMARY KEY,
+		reset_at INTEGER
+	)`,
 	`CREATE TABLE IF NOT EXISTS fleet_usage (
 		id            INTEGER PRIMARY KEY AUTOINCREMENT,
 		task_id       TEXT NOT NULL,

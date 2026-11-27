@@ -229,6 +229,11 @@ func (s *Scheduler) Tick(ctx context.Context) ([]string, error) {
 			blocked = append(blocked, budgetWake(over, budget.day()))
 			continue
 		}
+		if task.quotaBackend != "" {
+			if blocked, _, err := s.Store.BackendQuotaBlocked(ctx, task.quotaBackend); err != nil || blocked {
+				continue
+			}
+		}
 		branch := task.Branch
 		if branch == "" {
 			branch = project.BranchName(task.ID)

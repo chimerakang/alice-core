@@ -37,6 +37,10 @@ func (r *Runner) quotaFallback(ctx context.Context, task Task, fresh bool, opts 
 	default:
 		return "", ""
 	}
+	blocked, reset, err := r.Store.BackendQuotaBlocked(ctx, backend)
+	if err != nil || (blocked && reset.IsZero()) {
+		return "", ""
+	}
 	model, eligible := r.ScoutQuotaFallback(ctx, task, backend)
 	if !eligible {
 		return "", ""
