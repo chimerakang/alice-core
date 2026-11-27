@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -184,13 +185,28 @@ func (c *Commander) cancel(ctx context.Context, taskID, reason string) (Task, er
 	return updated, nil
 }
 
+// EventModelSelected identifies the routing decision recorded on a task.
+const EventModelSelected = "model.selected"
+
+// RetryModel replaces the current model atomically with the retry transition.
+type RetryModel struct {
+	ExpectedModel string
+	Model         string
+	Event         json.RawMessage
+}
+
 // Retry sends a failed or blocked task back to the queue for a fresh run.
 // Its worktree and branch are kept; its agent session is not resumed.
 func (c *Commander) Retry(ctx context.Context, actor Actor, taskID string) (Task, error) {
+	return c.RetryWithModel(ctx, actor, taskID, nil)
+}
+
+// RetryWithModel optionally saves a model choice before the scheduler can run the task.
+func (c *Commander) RetryWithModel(ctx context.Context, actor Actor, taskID string, change *RetryModel) (Task, error) {
 	if err := c.check(actor); err != nil {
 		return Task{}, err
 	}
-	task, err := c.Store.Transition(ctx, taskID, StatusQueued, "retry requested by "+actor.ID)
+	task, err := c.Store.transitionWithModel(ctx, taskID, StatusQueued, "retry requested by "+actor.ID, false, change)
 	if err == nil && c.Scheduler != nil {
 		c.Scheduler.Kick()
 	}
