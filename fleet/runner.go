@@ -119,7 +119,8 @@ type RunOptions struct {
 	// OnStart, when set, is called once the agent process is running, with
 	// the task as it stands then (workspace assigned). It must return
 	// promptly: the agent's output is not read until it does.
-	OnStart func(Task)
+	OnStart       func(Task)
+	startupResume *startupResume
 }
 
 // RunResult describes a finished run.
@@ -214,7 +215,13 @@ func (r *Runner) Run(ctx context.Context, taskID string, opts RunOptions) (RunRe
 	}
 	defer r.unregister(taskID, run)
 
-	task, err := r.Store.Transition(ctx, taskID, StatusRunning, reason)
+	var task Task
+	if opts.startupResume == nil {
+		task, err = r.Store.Transition(ctx, taskID, StatusRunning, reason)
+	} else {
+		task, err = r.Store.transitionStartupResume(ctx, taskID, opts.startupResume)
+		_ = r.Store.recordAudit(context.WithoutCancel(ctx), startupResumeAudit(before, err))
+	}
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -364,7 +371,7 @@ func (r *Runner) execute(ctx context.Context, task *Task, fresh bool, opts RunOp
 	case mode == stopInterrupt:
 		end.status, end.reason, end.requested = StatusNeedsDecision, stopReason, true
 	case ctx.Err() != nil:
-		end.status, end.reason = StatusNeedsDecision, "runner stopped: "+ctx.Err().Error()
+		end.status, end.reason = StatusNeedsDecision, runnerStoppedPrefix+ctx.Err().Error()
 	case waitErr != nil && elapsed >= timeout:
 		end.status, end.reason = StatusNeedsDecision, "timed out after "+timeout.String()
 	case stream.result == nil:
