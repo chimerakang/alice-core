@@ -19,8 +19,8 @@ Reusable Go library extracted from [Alice](https://github.com/chimerakang/alice)
 | `fleet/` | Command layer for running agents across projects: project registry, task model and lifecycle state machine, append-only task event log, a `Runner` (one agent per task in its own worktree), a `Verifier` (acceptance by exit code), a `Scheduler` (queue and concurrency limits), a `Deliverer` (commit, push, pull request, approval), a `Watcher` (zero-token supervision with a durable wake queue), and the operating surface: `Commander` (audited commands and queries), `Bus` (resumable event stream) and `Notifier` (normal / quiet / afk) |
 | `worktree/` | Per-task git worktrees: create, attach, list, prune, and removal that refuses uncommitted work |
 | `verify/` | Acceptance checks judged by exit code: `Step` interface, shell-command steps, `go build` / `tsc` / `jq` steps, path deny-list guard |
-| `engine/` | Plan-execute FSM, recovery policy for plan-execute modes, review engine, graph walker. Re-exports `chat` types for compatibility |
-| `hermes/` | Planner/executor system, `SQLiteTaskStore`, task state machine, snapshot. Re-exports `ghissue` types for compatibility |
+| `engine/` | `DirectEngine` (one agent run), execution interfaces, runtime event types. Re-exports `chat` types for compatibility |
+| `hermes/` | Task state types, tool hooks, prompt builder. The planner/executor and its task store were removed; use `fleet` |
 | `issueops/` | GitHub issue workflow over orchestrator-neutral `WorkItem`s: checklist mapping, evidence, guarded sync and close |
 | `process/` | External command runner (`RunOutput`, `Command`) |
 
@@ -125,25 +125,6 @@ ag.SetRoutingConfig(agent.ModelRoutingConfig{
     StickySession:        true,
     SessionIdleTimeoutMin: 60,
 })
-```
-
-## Hermes Planner (multi-step tasks)
-
-`hermes` provides a full plan-execute system for decomposing complex tasks into sub-tasks with review:
-
-```go
-import (
-    "github.com/chimerakang/alice-core/hermes"
-    "github.com/chimerakang/alice-core/engine"
-)
-
-store := hermes.NewSQLiteTaskStore("./data/alice.db")
-runner := hermes.NewProcessRunner(cli, projectDir, channelID, topicID)
-planner := hermes.NewPlanner(store, runner, hermes.DefaultConfig())
-
-ctx := context.Background()
-chatCtx := engine.NewChatContext(channelID, topicID, projectDir)
-result, err := planner.Run(ctx, "實作一個 REST API，包含 CRUD 操作", chatCtx)
 ```
 
 ## Fleet (multi-project task tracking)
@@ -305,11 +286,7 @@ Your App
     │       ├── agent.StorageBackend  (your SQLiteStorage or custom)
     │       └── agent.EventSink  (your WebSocket hub or custom)
     │
-    └── hermes.Planner  (optional multi-step execution)
-            │
-            ├── engine.PlanExecuteEngine
-            ├── engine.graph.Walker  (node-based FSM)
-            └── hermes.SQLiteTaskStore
+    └── fleet.Commander  (optional: one agent run per task, each in its own worktree)
 ```
 
 ## License

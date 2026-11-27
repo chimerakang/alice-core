@@ -4,7 +4,6 @@
 package storage
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"github.com/chimerakang/alice-core/agent"
-	"github.com/chimerakang/alice-core/engine"
 	"github.com/chimerakang/alice-core/git"
 	_ "modernc.org/sqlite" // Pure Go SQLite driver
 )
@@ -836,75 +834,6 @@ func (s *SQLiteStorage) InsertUnifiedReviewSubTaskResult(result UnifiedReviewSub
 	return err
 }
 
-// StoreReview persists a completed engine.ReviewResult into the unified task schema.
-func (s *SQLiteStorage) StoreReview(ctx context.Context, taskID string, review engine.ReviewResult) error {
-	if err := review.Validate(); err != nil {
-		return fmt.Errorf("validate review: %w", err)
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin review transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	createdAt := time.Now()
-	tagsJSON, _ := json.Marshal(reviewTagsToStrings(review.IssueTags))
-	res, err := tx.Exec(`
-		INSERT INTO review_results
-			(task_id, reviewer_model, verdict, overall_score, feedback_text, issue_tags,
-			 input_tokens, output_tokens, cost_usd, block_count, auto_fixed_count, source, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		taskID, strings.TrimSpace(review.ReviewerModel), string(review.Verdict),
-		review.OverallScore, strings.TrimSpace(review.Feedback), string(tagsJSON),
-		review.InputTokens, review.OutputTokens, review.CostUSD,
-		review.BlockCount, review.AutoFixedCount, "initial", createdAt.Format(time.RFC3339Nano),
-	)
-	if err != nil {
-		return err
-	}
-	reviewID, err := res.LastInsertId()
-	if err != nil {
-		return err
-	}
-
-	for idx, subTask := range review.SubTaskResults {
-		subTaskTags, _ := json.Marshal(reviewTagsToStrings(subTask.IssueTags))
-		subTaskID := reviewSubTaskStorageID(taskID, idx, subTask.SubTaskID)
-		if _, err := tx.Exec(`
-			INSERT INTO review_subtask_results
-				(review_id, sub_task_id, score, feedback, issue_tags)
-			VALUES (?, ?, ?, ?, ?)`,
-			reviewID, subTaskID, subTask.Score, strings.TrimSpace(subTask.Feedback), string(subTaskTags),
-		); err != nil {
-			return err
-		}
-	}
-
-	return tx.Commit()
-}
-
-func reviewSubTaskStorageID(taskID string, idx int, subTaskID string) string {
-	subTaskID = strings.TrimSpace(subTaskID)
-	if strings.HasPrefix(subTaskID, taskID+":") {
-		return subTaskID
-	}
-	// Fallback: taskID:idx+1
-	return fmt.Sprintf("%s:%d", taskID, idx+1)
-}
-
-func reviewTagsToStrings(tags []engine.ReviewIssueTag) []string {
-	if len(tags) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(tags))
-	for _, tag := range tags {
-		out = append(out, string(tag))
-	}
-	return out
-}
-
-// ListUnifiedTaskGraphs returns a list of task graphs matching the query.
 func (s *SQLiteStorage) ListUnifiedTaskGraphs(query UnifiedTaskQuery) ([]UnifiedTaskGraph, error) {
 	where, args := unifiedTaskWhere(query)
 	limit := query.Limit
